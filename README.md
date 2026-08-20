@@ -14,6 +14,7 @@ Aqui documento minha evolução desde os fundamentos de Git e Docker até pipeli
 ## Estrutura
 
 - `aula-01/` — Fundamentos de Git e Docker
+- `aula-02/` — Docker Compose e IA como Copiloto DevOps
 
 ## Aprendizados
 
@@ -39,3 +40,59 @@ cd aula-01/app
 docker build -t portfolio-aula01:1.0 .
 docker run -d -p 3000:3000 portfolio-aula01:1.0
 curl http://localhost:3000
+```
+
+---
+
+# Aula 02 — Docker Compose e IA como Copiloto DevOps
+
+## O que aprendi
+
+- Aprendi a orquestrar múltiplos containers com Docker Compose, definindo uma stack completa (API, banco de dados e cache) em um único arquivo `docker-compose.yml`.
+- Aprendi a usar variáveis de ambiente com interpolação do arquivo `.env`, mantendo credenciais e configurações sensíveis fora do código versionado.
+- Aprendi a configurar healthchecks nos serviços para verificar se o container está realmente pronto para receber conexões, usando comandos como `pg_isready` (PostgreSQL) e `redis-cli ping` (Redis).
+- Aprendi a usar `depends_on` com `condition: service_healthy`, garantindo que a API só inicie após o banco de dados e o cache passarem nos healthchecks.
+- Aprendi a criar redes bridge customizadas no Docker Compose, permitindo que os serviços se comuniquem pelo nome do hostname (ex: `postgres`, `redis`) sem expor as portas ao host.
+- Aprendi a usar volumes nomeados para persistência de dados do PostgreSQL, garantindo que os dados sobrevivam à recriação dos containers.
+- Aprendi a configurar a política `restart: unless-stopped`, tornando os serviços resilientes a falhas e reinicializações do Docker.
+- Aprendi a utilizar imagens Alpine (`postgres:15-alpine`, `redis:7-alpine`, `node:20-alpine`) para reduzir o tamanho final das imagens.
+- Aprendi a usar a IA como copiloto DevOps: gerar um output inicial com um prompt bem estruturado e depois validar criticamente o resultado, identificando o que foi acertado e o que precisou ser corrigido ou complementado.
+
+## Comandos Docker Compose praticados
+
+- `docker compose up -d` — subir todos os serviços da stack em modo detached.
+- `docker compose down` — parar e remover os containers da stack.
+- `docker compose down -v` — parar, remover containers e também os volumes nomeados.
+- `docker compose ps` — listar o status dos serviços em execução.
+- `docker compose logs -f <serviço>` — acompanhar os logs de um serviço em tempo real.
+- `docker compose build` — construir (ou reconstruir) a imagem de um serviço a partir do Dockerfile.
+- `docker inspect <container>` — inspecionar detalhes de configuração de um container.
+
+## Conceitos-chave
+
+- **Multi-service stack:** uma aplicação real raramente roda em um único container; o Compose permite descrever toda a infraestrutura como código.
+- **Healthcheck:** verificação ativa de saúde que permite ao Compose e ao Docker saber se um serviço está realmente funcional, não apenas em execução.
+- **Rede bridge customizada:** isola a comunicação entre serviços e habilita resolução de nomes por hostname, sem expor portas desnecessariamente ao host.
+- **Volume nomeado:** armazenamento gerenciado pelo Docker que persiste dados entre reinicializações, essencial para bancos de dados.
+- **IA como copiloto:** a IA acelera a geração de scaffolding e boilerplate, mas o profissional DevOps precisa revisar o output — verificando variáveis, credenciais, healthchecks e alinhamento com boas práticas — antes de usar em produção.
+
+## Como executar esta stack
+
+```bash
+cd aula-02
+# Copie o arquivo de exemplo e ajuste as variáveis
+cp .env.example .env
+
+# Suba todos os serviços
+docker compose up -d
+
+# Verifique o status e aguarde os healthchecks passarem
+docker compose ps
+
+# Teste a API
+curl http://localhost:3000
+curl http://localhost:3000/health
+
+# Para encerrar
+docker compose down
+```
