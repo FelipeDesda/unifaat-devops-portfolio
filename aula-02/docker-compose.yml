@@ -1,0 +1,97 @@
+# =============================================================
+# docker-compose.yml — TechNova API (Aula 02)
+# Stack: Node.js 20 (build local) + PostgreSQL 15 + Redis 7
+# Todas as variáveis sensíveis são lidas do arquivo .env
+# =============================================================
+
+services:
+
+  # -----------------------------------------------------------
+  # api — Aplicação Node.js construída a partir do Dockerfile
+  #        local. Só sobe após postgres e redis estarem healthy.
+  # -----------------------------------------------------------
+  api:
+    build:
+      context: .           # usa o Dockerfile na raiz do projeto
+      dockerfile: Dockerfile
+    container_name: technova_api
+    ports:
+      - "${APP_PORT}:3000" # porta do host mapeada via .env
+    environment:
+      NODE_ENV: ${NODE_ENV}
+      PORT: ${APP_PORT}
+      # Variáveis de conexão com o banco (nomes que app.js espera)
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_NAME: ${DB_NAME}
+      # Variáveis de conexão com o cache (nomes que app.js espera)
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
+    depends_on:
+      # A API só inicia quando postgres e redis já passaram no healthcheck
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - technova_network
+    restart: unless-stopped  # reinicia automaticamente, exceto parada manual
+
+  # -----------------------------------------------------------
+  # postgres — Banco de dados relacional com volume nomeado
+  #             para garantir persistência dos dados entre
+  #             reinicializações do container.
+  # -----------------------------------------------------------
+  postgres:
+    image: postgres:15-alpine
+    container_name: technova_postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}           # nome do banco inicial
+      POSTGRES_USER: ${POSTGRES_USER}       # usuário proprietário
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD} # senha — vem do .env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data  # volume nomeado para persistência
+    networks:
+      - technova_network
+    restart: unless-stopped
+    healthcheck:
+      # pg_isready verifica se o servidor aceita conexões
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s      # verifica a cada 10 segundos
+      timeout: 5s        # tempo máximo para o comando responder
+      retries: 5         # tentativas antes de marcar como unhealthy
+      start_period: 10s  # janela de graça enquanto o postgres inicializa
+
+  # -----------------------------------------------------------
+  # redis — Cache em memória. Sem volume pois dados de cache
+  #          são efêmeros por natureza.
+  # -----------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: technova_redis
+    networks:
+      - technova_network
+    restart: unless-stopped
+    healthcheck:
+      # redis-cli ping retorna PONG quando o servidor está pronto
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+# =============================================================
+# Volumes nomeados — gerenciados pelo Docker, sobrevivem a
+# "docker compose down" (use -v para remover junto).
+# =============================================================
+volumes:
+  postgres_data:
+    driver: local
+
+# =============================================================
+# Rede bridge customizada — isola os serviços e permite
+# resolução de nomes por hostname (postgres, redis, api).
+# =============================================================
+networks:
+  technova_network:
+    driver: bridge
