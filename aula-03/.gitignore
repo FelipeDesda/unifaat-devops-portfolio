@@ -1,0 +1,13 @@
+# Terraform state e cache
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+
+# Variáveis sensíveis
+*.tfvars
+
+# Arquivos de credenciais AWS locais
+*.pem
+*.key
+credentials
