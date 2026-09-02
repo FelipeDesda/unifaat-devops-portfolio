@@ -16,6 +16,7 @@ Aqui documento minha evolução desde os fundamentos de Git e Docker até pipeli
 - `aula-01/` — Fundamentos de Git e Docker
 - `aula-02/` — Docker Compose e IA como Copiloto DevOps
 - `aula-03/` — IAM com Terraform: Identidade e Acesso (Groups, Users, Policies, Service Role)
+- `aula-04/` — Infraestrutura Multi-AZ na AWS com Terraform: VPC, Subnets, EC2, IAM Role e Security Groups
 
 ## Aprendizados
 
@@ -187,3 +188,85 @@ Essa policy managed da AWS concede `s3:*` em `Resource: *`, o que significa que 
 ```
 
 > A instância EC2 nunca precisa de credenciais estáticas (access key / secret key). O Instance Profile injeta credenciais temporárias automaticamente via metadata service (`169.254.169.254`), renovadas a cada hora pela AWS. Esse é o padrão seguro para workloads em cloud.
+
+
+---
+
+# Aula 04 — Infraestrutura Multi-AZ na AWS com Terraform | Felipe Damasceno (6325128)
+
+## O que aprendi
+
+- Aprendi a criar uma VPC completa com Terraform, definindo blocos CIDR, subnets públicas e privadas distribuídas em múltiplas Availability Zones (`us-east-1a` e `us-east-1b`).
+- Aprendi o conceito de Multi-AZ: distribuir recursos em duas AZs garante alta disponibilidade — se uma AZ falhar, os recursos da outra continuam operando.
+- Aprendi a diferença entre subnets públicas e privadas: subnets públicas possuem rota para o Internet Gateway e hospedam recursos acessíveis pela internet (como a EC2 com a API); subnets privadas ficam isoladas, prontas para hospedar bancos de dados no futuro.
+- Aprendi a criar e associar um Internet Gateway (IGW) e uma Route Table pública que direciona todo o tráfego (`0.0.0.0/0`) para o IGW.
+- Aprendi a criar Security Groups com regras de ingresso e egresso precisas: portas 22 (SSH) e 3000 (API) abertas ao mundo, e porta 5432 (PostgreSQL) restrita ao CIDR da VPC.
+- Aprendi a criar uma IAM Role para instância EC2 com Trust Policy para `ec2.amazonaws.com`, Instance Profile como wrapper obrigatório, e policy `AmazonS3ReadOnlyAccess` anexada — sem precisar de credenciais estáticas na instância.
+- Aprendi a gerar um Key Pair RSA 4096 diretamente pelo Terraform (provider `tls`), registrar a chave pública na AWS e salvar a privada localmente com permissão `0600`.
+- Aprendi a usar o recurso `aws_ami` com `data source` e filtros para selecionar a AMI mais recente do Amazon Linux 2023 automaticamente.
+- Aprendi a escrever um User Data em `bash` para configurar automaticamente a instância: instalar Node.js via `dnf`, criar uma API simples com endpoints `/` e `/health`, e registrar a aplicação como serviço `systemd` com `Restart=on-failure`.
+- Aprendi a usar `default_tags` no bloco `provider` para aplicar tags (`Project`, `Environment`, `ManagedBy`, `Owner`) a todos os recursos de forma centralizada.
+- Aprendi a exportar outputs úteis (`ec2_public_ip`, `api_url`, `ssh_command`, IDs de VPC e subnets) para facilitar os testes e evidências do lab.
+
+## Conceitos-chave
+
+- **Multi-AZ:** redundância geográfica dentro de uma região AWS; base de qualquer arquitetura de produção de alta disponibilidade.
+- **Subnet pública vs. privada:** isolamento por design — apenas o que precisa de acesso externo fica exposto; bancos de dados e serviços internos ficam na camada privada sem rota para a internet.
+- **Internet Gateway + Route Table:** o IGW é a porta de entrada/saída da VPC para a internet; a Route Table define quais subnets têm essa rota e quais não têm.
+- **Security Group:** firewall stateful no nível da instância; regras de ingresso controlam o que entra, regras de egresso controlam o que sai.
+- **IAM Instance Profile:** mecanismo que injeta credenciais temporárias na EC2 via metadata service (`169.254.169.254`), eliminando a necessidade de access keys estáticas no servidor.
+- **User Data + systemd:** inicialização automática da aplicação no boot da instância com resiliência a falhas; mais robusto que executar o processo em background manualmente.
+- **Key Pair gerenciado pelo Terraform:** chave RSA criada, registrada na AWS e salva localmente em uma única execução de `terraform apply`, sem passo manual.
+
+## Arquitetura Provisionada
+
+```
+Internet → IGW → Route Table Pública → Subnet Pública (us-east-1a) → EC2 (porta 22 / 3000)
+
+VPC: technova-vpc (10.0.0.0/16)
+├── Subnet Pública 1  — 10.0.1.0/24 (us-east-1a) → EC2 API Node.js
+├── Subnet Pública 2  — 10.0.3.0/24 (us-east-1b) → (Load Balancer futuro)
+├── Subnet Privada 1  — 10.0.2.0/24 (us-east-1a) → (RDS futuro)
+└── Subnet Privada 2  — 10.0.4.0/24 (us-east-1b) → (RDS futuro)
+```
+
+## Recursos Criados
+
+| Recurso Terraform | Nome AWS | Função |
+|---|---|---|
+| `aws_vpc.main` | `technova-vpc` | Rede isolada para toda a infraestrutura |
+| `aws_subnet.public[0/1]` | `technova-subnet-public-1/2` | Subnets públicas Multi-AZ |
+| `aws_subnet.private[0/1]` | `technova-subnet-private-1/2` | Subnets privadas Multi-AZ (banco futuro) |
+| `aws_internet_gateway.main` | `technova-igw` | Porta de saída para a internet |
+| `aws_route_table.public` | `technova-rt-public` | Rota `0.0.0.0/0` → IGW |
+| `aws_security_group.api` | `technova-sg-api` | Permite SSH (22) e API (3000) |
+| `aws_security_group.db` | `technova-sg-db` | Permite PostgreSQL (5432) apenas da VPC |
+| `aws_iam_role.ec2_role` | `technova-ec2-role` | IAM Role com `S3ReadOnlyAccess` para o EC2 |
+| `aws_iam_instance_profile.ec2_profile` | `technova-ec2-instance-profile` | Vincula a Role ao EC2 |
+| `tls_private_key.technova` + `aws_key_pair.technova` | `technova-key` | Par de chaves RSA 4096 gerado pelo Terraform |
+| `aws_instance.api` | `technova-ec2-api` | Instância `t2.micro` com API Node.js via systemd |
+
+## Como Executar
+
+```bash
+cd aula-04
+
+# 1. Ajuste o RA no arquivo de variáveis
+#    Edite terraform.tfvars e defina: owner_ra = "SEU-RA"
+
+# 2. Inicializar
+terraform init
+
+# 3. Revisar o plano
+terraform plan
+
+# 4. Aplicar (aguarde ~3 min para o User Data concluir)
+terraform apply
+
+# 5. Testar a API
+curl http://$(terraform output -raw ec2_public_ip):3000
+curl http://$(terraform output -raw ec2_public_ip):3000/health
+
+# 6. Destruir ao final do lab
+terraform destroy
+```
