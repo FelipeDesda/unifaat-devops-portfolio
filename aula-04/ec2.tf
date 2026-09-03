@@ -53,59 +53,74 @@ resource "local_sensitive_file" "private_key" {
 
 locals {
   user_data = <<-EOF
-    #!/bin/bash
-    set -e
+#!/bin/bash
+set -xe
+exec > /var/log/user-data.log 2>&1
 
-    # Atualiza pacotes
-    dnf update -y
+# Atualiza pacotes
+dnf update -y
 
-    # Instala Git
-    dnf install -y git
+# Instala Git e Node.js 18
+dnf install -y git
+curl -fsSL https://rpm.nodesource.com/setup_18.x | bash -
+dnf install -y nodejs
 
-    # Instala Node.js 18 via NodeSource
-    curl -fsSL https://rpm.nodesource.com/setup_18.x | bash -
-    dnf install -y nodejs
+# Cria diretório da aplicação
+mkdir -p /opt/technova
+cd /opt/technova
 
-    # Cria diretório da aplicação
-    mkdir -p /opt/technova
-    cd /opt/technova
+# Tenta clonar o repositório; se falhar, cria API de exemplo
+if ! git clone https://github.com/KauanIzidoro/technova-api.git . 2>/dev/null; then
+  echo "AVISO: clone falhou — criando API de exemplo"
+  cat > /opt/technova/index.js <<'JSEOF'
+const http = require('http');
+const PORT = process.env.PORT || 3000;
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ status: 'ok', app: 'technova-api', message: 'API no ar!' }));
+});
+server.listen(PORT, () => console.log('Servidor na porta ' + PORT));
+JSEOF
+  echo '{"name":"technova-api","version":"1.0.0","main":"index.js"}' > /opt/technova/package.json
+else
+  npm install
+fi
 
-    # Clona o repositório da API TechNova
-    git clone https://github.com/KauanIzidoro/technova-api.git .
+# Detecta entrypoint real
+ENTRYPOINT="index.js"
+if [ -f package.json ]; then
+  MAIN=$(node -e "try{console.log(require('./package.json').main||'')}catch(e){}" 2>/dev/null)
+  [ -n "$MAIN" ] && [ -f "$MAIN" ] && ENTRYPOINT="$MAIN"
+fi
 
-    # Instala dependências
-    npm install
+# Cria serviço systemd
+cat > /etc/systemd/system/technova-api.service <<UNIT
+[Unit]
+Description=TechNova API
+After=network.target
 
-    # Cria serviço systemd para manter a API ativa
-    cat > /etc/systemd/system/technova-api.service <<UNIT
-    [Unit]
-    Description=TechNova API
-    After=network.target
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/opt/technova
+ExecStart=/usr/bin/node /opt/technova/$${ENTRYPOINT}
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+Environment=PORT=3000
+Environment=NODE_ENV=production
 
-    [Service]
-    Type=simple
-    User=ec2-user
-    WorkingDirectory=/opt/technova
-    ExecStart=/usr/bin/node /opt/technova/index.js
-    Restart=on-failure
-    RestartSec=10
-    StandardOutput=journal
-    StandardError=journal
-    Environment=PORT=3000
-    Environment=NODE_ENV=production
+[Install]
+WantedBy=multi-user.target
+UNIT
 
-    [Install]
-    WantedBy=multi-user.target
-    UNIT
-
-    # Ajusta permissão do diretório
-    chown -R ec2-user:ec2-user /opt/technova
-
-    # Habilita e inicia o serviço
-    systemctl daemon-reload
-    systemctl enable technova-api
-    systemctl start technova-api
-  EOF
+# Ajusta permissoes e inicia o servico
+chown -R ec2-user:ec2-user /opt/technova
+systemctl daemon-reload
+systemctl enable technova-api
+systemctl start technova-api
+EOF
 }
 
 # ============================================================
@@ -118,7 +133,7 @@ resource "aws_instance" "api" {
   subnet_id              = aws_subnet.public[0].id
   vpc_security_group_ids = [aws_security_group.api.id]
   key_name               = aws_key_pair.technova.key_name
-  iam_instance_profile   = aws_iam_instance_profile.ec2_profile.name
+  iam_instance_profile   = data.aws_iam_instance_profile.lab.name
 
   user_data                   = local.user_data
   user_data_replace_on_change = true

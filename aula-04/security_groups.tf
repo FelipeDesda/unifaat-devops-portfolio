@@ -4,7 +4,7 @@
 
 resource "aws_security_group" "api" {
   name        = "technova-sg-api"
-  description = "Security Group para a API TechNova (porta 22 e 3000)"
+  description = "Security Group para a API TechNova (portas 22 e 3000)"
   vpc_id      = aws_vpc.main.id
 
   # SSH
@@ -45,7 +45,7 @@ resource "aws_security_group" "api" {
 
 resource "aws_security_group" "db" {
   name        = "technova-sg-db"
-  description = "Security Group para o banco de dados PostgreSQL (acesso interno à VPC)"
+  description = "Security Group para o banco de dados PostgreSQL (acesso interno a VPC)"
   vpc_id      = aws_vpc.main.id
 
   # PostgreSQL — apenas de dentro da VPC
