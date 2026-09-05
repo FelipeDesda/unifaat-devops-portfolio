@@ -226,7 +226,8 @@ terraform output ssh_command         # Comando SSH completo
 
 ```
 aula-04/
-├── main.tf              # Provider AWS, TLS e Local; versões e default_tags
+├── providers.tf         # Bloco terraform{} (versões), providers AWS/TLS/Local e default_tags
+├── main.tf              # Ponto de entrada (referência; configurações em providers.tf)
 ├── variables.tf         # Declaração de todas as variáveis
 ├── terraform.tfvars     # Valores das variáveis (ajuste o owner_ra)
 ├── networking.tf        # VPC, Subnets, IGW e Route Tables
