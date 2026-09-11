@@ -1,0 +1,27 @@
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
+*.tfstate.*.backup
+terraform.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Chaves SSH e credenciais
+*.pem
+*.key
+aws-creds.sh
+
+# Arquivos locais
+.env
+crash.log
+crash.*.log
+
+# Diretórios de IDE
+.idea/
+.vscode/
+*.swp
+*.swo
