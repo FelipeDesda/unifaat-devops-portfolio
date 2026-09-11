@@ -276,14 +276,39 @@ terraform destroy
 
 # Aula 05 — RDS PostgreSQL e Remote State | Felipe Damasceno (6325128)
 
+Infraestrutura completa provisionada com Terraform, incluindo VPC, EC2, RDS PostgreSQL e remote state protegido no S3 com locking no DynamoDB.
+
+## Estrutura específica
+
+```text
+aula-05/
+├── bootstrap/             # Backend remoto: S3 + DynamoDB, com state local
+├── backend.tf             # Configuração do remote state no S3
+├── providers.tf           # Provider AWS, versões e default_tags
+├── variables.tf           # Variáveis da infraestrutura principal
+├── terraform.tfvars.example
+├── vpc.tf                 # VPC, subnets, gateways e route tables
+├── security_groups.tf     # Security Groups da EC2 e do RDS
+├── rds.tf                 # DB Subnet Group e RDS PostgreSQL
+├── ec2.tf                 # EC2 com user_data e cliente psql
+└── outputs.tf             # IDs, endpoints, IPs e comandos úteis
+```
+
+## Pré-requisitos
+
+- Terraform >= 1.5.0
+- AWS CLI configurado (`aws configure`)
+- Key Pair criado na AWS para acesso SSH à EC2
+- Permissões IAM para EC2, RDS, VPC, S3 e DynamoDB
+
 ## O que aprendi
 
-- Aprendi a provisionar um banco de dados gerenciado com `aws_db_instance`, configurando engine, versão, classe de instância, storage encriptado e isolamento de rede — sem nenhuma credencial de acesso exposta no código.
+- Aprendi a provisionar um banco de dados gerenciado com `aws_db_instance`, configurando PostgreSQL 15, classe de instância, storage encriptado e isolamento de rede — sem nenhuma credencial de acesso exposta no código.
 - Aprendi a criar um `aws_db_subnet_group` com subnets privadas em duas AZs distintas, requisito obrigatório da AWS para o RDS mesmo em modo `multi_az = false`.
 - Aprendi a diferenciar `publicly_accessible = false` (RDS sem IP público, acessível apenas por recursos dentro da VPC) de uma subnet pública: o isolamento real vem da combinação entre ausência de IP público e regras de Security Group.
-- Aprendi a configurar o Remote State do Terraform usando um bucket S3 com versionamento, encriptação SSE-S3 e bloqueio de acesso público — garantindo que o `terraform.tfstate` nunca fique apenas na máquina local.
-- Aprendi a usar `use_lockfile = true` no backend S3 (recurso nativo do Terraform >= 1.10), que armazena um arquivo `.tflock` diretamente no S3 durante o `apply`, evitando que dois operadores apliquem mudanças simultâneas sem a necessidade de uma tabela DynamoDB.
-- Aprendi que o bucket S3 precisa existir **antes** do `terraform init`, pois o backend é inicializado antes de qualquer recurso ser criado — o bootstrap é feito manualmente via AWS CLI.
+- Aprendi a configurar o Remote State do Terraform usando um bucket S3 com versionamento, encriptação SSE-S3 e bloqueio de acesso público — garantindo que o `terraform.tfstate` não fique apenas na máquina local.
+- Aprendi a usar uma tabela DynamoDB com chave `LockID` para impedir que dois operadores executem `terraform apply` simultaneamente e corrompam o state.
+- Aprendi que o backend precisa existir **antes** do `terraform init`; por isso, o módulo `bootstrap/` usa state local para preparar o S3 e o DynamoDB.
 - Aprendi a criar uma Route Table privada sem rota para internet e associá-la às subnets do RDS, garantindo isolamento completo do banco mesmo dentro da mesma VPC.
 - Aprendi a usar `source_security_group_id` no Security Group do RDS em vez de um CIDR aberto, restringindo o acesso à porta 5432 exclusivamente às instâncias EC2 que possuem o SG da API — princípio do menor privilégio aplicado em nível de rede.
 - Aprendi a instalar o cliente `postgresql15` no EC2 via User Data para validar a conectividade ao RDS sem sair da infraestrutura provisionada.
@@ -292,7 +317,7 @@ terraform destroy
 ## Conceitos-chave
 
 - **Remote State:** armazenar o `terraform.tfstate` em um backend remoto compartilhado (S3) é essencial para times — qualquer membro da equipe trabalha sempre com o estado mais recente e não há risco de conflito de state local.
-- **State Lock:** o mecanismo de lock impede que dois `terraform apply` rodem ao mesmo tempo, evitando corrupção do state. O `use_lockfile = true` resolve isso via S3 nativo, sem depender de DynamoDB.
+- **State Lock:** a tabela DynamoDB impede que dois `terraform apply` rodem ao mesmo tempo, evitando corrupção do state.
 - **RDS vs. banco em EC2:** o RDS é um serviço gerenciado — a AWS cuida de backups, patches de segurança, failover e réplicas. Rodar PostgreSQL em EC2 manualmente exige toda essa operação manual, aumentando risco operacional.
 - **DB Subnet Group:** agrupamento de subnets que define em quais AZs o RDS pode ser colocado; exige ao menos 2 AZs para garantir capacidade de failover mesmo em modo single-AZ.
 - **`publicly_accessible = false`:** o RDS não recebe IP público. O único caminho para acessá-lo é por dentro da VPC — geralmente via EC2 (bastion) ou uma conexão SSH com port forwarding.
@@ -311,7 +336,7 @@ Internet → IGW → Route Table Pública → Subnet Pública (us-east-1a) → E
 
 Remote State:
   S3 Bucket   → technova-tfstate-unifaat   (versionado + encriptado + acesso público bloqueado)
-  Lock File   → .tflock no próprio S3      (use_lockfile = true — sem DynamoDB)
+  DynamoDB    → technova-tfstate-lock      (LockID — controle de concorrência)
 
 VPC: technova-vpc (10.0.0.0/16)
 ├── Subnet Pública   — 10.0.1.0/24   (us-east-1a) → EC2 API
@@ -335,21 +360,22 @@ VPC: technova-vpc (10.0.0.0/16)
 | `aws_db_subnet_group.main` | `technova-db-subnet-group` | Agrupa as subnets privadas para o RDS |
 | `aws_db_instance.postgres` | `technova-postgres` | RDS PostgreSQL 15 (`db.t3.micro`, 20 GB, encriptado) |
 | `aws_instance.api` | EC2 da API | Instância com `psql` para testar conectividade ao RDS |
+| `aws_s3_bucket_versioning.tfstate` | S3 `technova-tfstate-unifaat` | Versionamento do Terraform state |
+| `aws_s3_bucket_server_side_encryption_configuration.tfstate` | S3 | Encriptação SSE-AES256 |
+| `aws_s3_bucket_public_access_block.tfstate` | S3 | Bloqueio completo de acesso público |
+| `aws_dynamodb_table.tfstate_lock` | `technova-tfstate-lock` | Lock do Terraform state |
 
 ## Como Executar
 
 ```bash
 cd aula-05
 
-# 1. Criar o bucket S3 para o remote state (bootstrap manual — só precisa rodar uma vez)
-aws s3api create-bucket --bucket technova-tfstate-unifaat --region us-east-1
-aws s3api put-bucket-versioning \
-  --bucket technova-tfstate-unifaat \
-  --versioning-configuration Status=Enabled
-aws s3api put-public-access-block \
-  --bucket technova-tfstate-unifaat \
-  --public-access-block-configuration \
-    "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+# 1. Preparar o remote state (executar uma vez)
+cd bootstrap
+terraform init
+terraform plan
+terraform apply
+cd ..
 
 # 2. Configurar variáveis
 cp terraform.tfvars.example terraform.tfvars
@@ -374,3 +400,34 @@ psql -h $(terraform output -raw rds_endpoint) -U technova_admin -d technova_db -
 # 8. Destruir ao final do lab
 terraform destroy
 ```
+
+## Remote State e outputs
+
+O bucket `technova-tfstate-unifaat` armazena o state em `aula-05/terraform.tfstate`. O bootstrap aplica versionamento, SSE-AES256, bloqueio de acesso público e nega requisições sem HTTPS ou sem encriptação. A tabela `technova-tfstate-lock` usa a chave `LockID` para controlar concorrência.
+
+Outputs principais:
+
+- `vpc_id`, `public_subnet_id` e `private_subnet_ids`
+- `ec2_public_ip`, `ec2_public_dns` e `ec2_ssh_command`
+- `rds_endpoint`, `rds_port` e `rds_db_name`
+- `rds_connection_string` e `psql_command` como outputs sensíveis
+- `tfstate_bucket`
+
+## Validações
+
+- `terraform init` exibe `Successfully configured the backend "s3"`.
+- `aws s3 ls s3://technova-tfstate-unifaat/aula-05/` lista o state remoto.
+- O RDS está em subnets privadas, com `publicly_accessible = false` e `storage_encrypted = true`.
+- O Security Group do RDS permite a porta 5432 somente a partir do Security Group da EC2.
+- `terraform.tfvars` e arquivos `.pem` permanecem fora do repositório.
+
+## Decisões de projeto
+
+| Decisão | Justificativa |
+|---|---|
+| `multi_az = false` | Reduz custo em ambiente de laboratório. |
+| `skip_final_snapshot = true` | Não cria snapshot final durante a destruição do lab. |
+| `publicly_accessible = false` | Mantém o RDS acessível apenas pela VPC. |
+| `storage_encrypted = true` | Protege os dados armazenados. |
+| `backup_retention_period = 0` | Mantém o laboratório dentro do objetivo de baixo custo. |
+| SG do RDS referenciando o SG da EC2 | Restringe a conexão PostgreSQL ao servidor de aplicação. |
