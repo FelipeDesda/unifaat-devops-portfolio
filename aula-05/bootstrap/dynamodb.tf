@@ -17,6 +17,6 @@ resource "aws_dynamodb_table" "tfstate_lock" {
 
   # Proteção contra deleção acidental da tabela de lock
   lifecycle {
-    prevent_destroy = true
+    prevent_destroy = false
   }
 }
