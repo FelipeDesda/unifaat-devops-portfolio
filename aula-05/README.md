@@ -43,17 +43,24 @@ Remote State:
 
 ```
 aula-05/
-├── backend.tf              # Configuração do remote state (S3 + DynamoDB)
-├── providers.tf            # Provider AWS + versões + default_tags
-├── variables.tf            # Todas as variáveis (sensíveis marcadas)
-├── terraform.tfvars.example # Template de variáveis (commitar)
-├── vpc.tf                  # VPC, subnets, IGW, route tables
-├── security_groups.tf      # SGs para EC2 e RDS
-├── rds.tf                  # DB Subnet Group + instância RDS PostgreSQL
-├── ec2.tf                  # Instância EC2 com user_data
-├── outputs.tf              # Outputs úteis (endpoint, IPs, comandos)
-├── .gitignore              # Exclui .terraform/, *.tfstate, *.pem, tfvars
-└── README.md               # Este arquivo
+├── bootstrap/                   # Módulo de bootstrap — cria o backend remoto
+│   ├── main.tf                  #   Provider AWS (state local — sem backend)
+│   ├── s3.tf                    #   Bucket S3 com versionamento, AES-256 e block public access
+│   ├── dynamodb.tf              #   Tabela DynamoDB para locking do state
+│   ├── outputs.tf               #   Outputs: bucket name, ARN e lock table name
+│   └── variables.tf             #   Variáveis: aws_region, project_name, tfstate_bucket_name
+│
+├── backend.tf                   # Configuração do remote state (S3 + DynamoDB)
+├── providers.tf                 # Provider AWS + versões + default_tags
+├── variables.tf                 # Todas as variáveis (sensíveis marcadas)
+├── terraform.tfvars.example     # Template de variáveis (commitar)
+├── vpc.tf                       # VPC, subnets, IGW, route tables
+├── security_groups.tf           # SGs para EC2 e RDS
+├── rds.tf                       # DB Subnet Group + instância RDS PostgreSQL
+├── ec2.tf                       # Instância EC2 com user_data
+├── outputs.tf                   # Outputs úteis (endpoint, IPs, comandos)
+├── .gitignore                   # Exclui .terraform/, *.tfstate, *.pem, tfvars
+└── README.md                    # Este arquivo
 ```
 
 ---
@@ -69,36 +76,44 @@ aula-05/
 
 ## Passo 1 — Criar a Infraestrutura de Remote State (Bootstrap)
 
-> O bucket S3 precisa existir **antes** de rodar o `terraform init` com o backend configurado.
-> O lock de state usa `use_lockfile = true`, que armazena um arquivo `.tflock` no próprio S3 (não precisa de DynamoDB).
+> O bucket S3 e a tabela DynamoDB precisam existir **antes** de rodar o `terraform init` com o backend configurado.
+> O módulo `bootstrap/` provisiona tudo isso via Terraform, com state local.
 
 ```bash
-# Criar o bucket S3
-aws s3api create-bucket \
-  --bucket technova-tfstate-unifaat \
-  --region us-east-1
+cd bootstrap/
 
-# Habilitar versionamento
-aws s3api put-bucket-versioning \
-  --bucket technova-tfstate-unifaat \
-  --versioning-configuration Status=Enabled
+# Inicializa o módulo (state local — sem backend remoto ainda)
+terraform init
 
-# Habilitar encriptação server-side (SSE-S3)
-aws s3api put-bucket-encryption \
-  --bucket technova-tfstate-unifaat \
-  --server-side-encryption-configuration '{
-    "Rules": [{
-      "ApplyServerSideEncryptionByDefault": {
-        "SSEAlgorithm": "AES256"
-      }
-    }]
-  }'
+# Verifica o que será criado
+terraform plan
 
-# Bloquear acesso público (todos os 4 flags = true)
-aws s3api put-public-access-block \
-  --bucket technova-tfstate-unifaat \
-  --public-access-block-configuration \
-    "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+# Cria o bucket S3 e a tabela DynamoDB
+terraform apply
+```
+
+O módulo cria automaticamente:
+
+| Recurso | Configuração |
+|---------|-------------|
+| **S3 Bucket** | Versionamento habilitado, SSE-AES256, block public access completo |
+| **Bucket Policy** | Nega HTTP puro e uploads sem encriptação |
+| **DynamoDB Table** | `technova-tfstate-lock`, chave `LockID`, billing `PAY_PER_REQUEST` |
+
+> **Atenção:** O state do `bootstrap/` fica local (`bootstrap/terraform.tfstate`). Guarde esse arquivo em segurança ou commite-o — ele é o único registro dos recursos de backend que foram criados.
+
+Após o `apply`, anote os outputs — eles são usados na configuração do `backend.tf`:
+
+```bash
+terraform output
+# tfstate_bucket_name     = "technova-tfstate-unifaat"
+# tfstate_bucket_arn      = "arn:aws:s3:::technova-tfstate-unifaat"
+# tfstate_lock_table_name = "technova-tfstate-lock"
+```
+
+```bash
+# Voltar para o diretório principal
+cd ..
 ```
 
 ---
@@ -113,7 +128,7 @@ cp terraform.tfvars.example terraform.tfvars
 Edite `terraform.tfvars` com:
 - `key_pair_name` — nome do seu Key Pair na AWS
 - `db_username` — usuário do banco (ex: `technova_admin`)
-- `db_password` — senha forte (mínimo 8 caracteres)
+- `db_password` — senha forte sem os caracteres `/ @ " ' ` ou espaços (restrição do RDS PostgreSQL)
 
 > **Atenção:** `terraform.tfvars` está no `.gitignore`. **Nunca commite** credenciais.
 
@@ -201,11 +216,13 @@ terraform output psql_command
 ## Evidências — Checklist de Validação
 
 ### Remote State
+- [ ] `cd bootstrap/ && terraform apply` conclui sem erros
+- [ ] `terraform output` exibe bucket name, ARN e lock table name
 - [ ] `aws s3 ls s3://technova-tfstate-unifaat/aula-05/` mostra o `terraform.tfstate`
-- [ ] `terraform init` exibe `Successfully configured the backend "s3"`
+- [ ] `terraform init` (raiz) exibe `Successfully configured the backend "s3"`
 - [ ] Versionamento habilitado: `aws s3api get-bucket-versioning --bucket technova-tfstate-unifaat`
 - [ ] Block Public Access: `aws s3api get-public-access-block --bucket technova-tfstate-unifaat`
-- [ ] Lock via `use_lockfile = true` (arquivo `.tflock` criado no S3 durante o apply)
+- [ ] Tabela DynamoDB criada: `aws dynamodb describe-table --table-name technova-tfstate-lock`
 
 ### VPC e Networking
 - [ ] `terraform output vpc_id` retorna um VPC ID válido
@@ -234,13 +251,20 @@ terraform output psql_command
 ## Destruir a Infraestrutura
 
 ```bash
-# ATENÇÃO: remove todos os recursos provisionados
+# 1. Destruir a infra principal (EC2, RDS, VPC, etc.)
 terraform destroy
 ```
 
-> O bucket S3 (remote state) foi criado via AWS CLI e deve ser removido manualmente se desejado:
+```bash
+# 2. Destruir o bootstrap (S3 + DynamoDB) — somente após destruir a infra principal
+# ATENÇÃO: os recursos têm prevent_destroy = true; remova-o antes se quiser destruir
+cd bootstrap/
+terraform destroy
+```
+
+> Para forçar a remoção do bucket manualmente (caso ainda haja objetos):
 > ```bash
-> # Esvaziar e remover bucket (CUIDADO: apaga o state!)
+> # Esvaziar todas as versões do bucket (CUIDADO: apaga o state!)
 > aws s3 rm s3://technova-tfstate-unifaat --recursive
 > aws s3api delete-bucket --bucket technova-tfstate-unifaat
 > ```

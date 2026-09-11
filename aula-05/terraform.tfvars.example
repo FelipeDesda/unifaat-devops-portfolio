@@ -26,7 +26,7 @@ db_allocated_storage = 20
 db_engine_version    = "15"
 db_name              = "technova_db"
 db_username          = "technova_admin"      # Troque por um usuário seguro
-db_password          = "SenhaForte@2026!"    # Troque por uma senha forte
+db_password          = "SenhaForte2026!"     # Troque por uma senha forte (sem / @ " ou espaços — restrição do RDS)
 
 # Remote State
 tfstate_bucket_name = "technova-tfstate-unifaat"
