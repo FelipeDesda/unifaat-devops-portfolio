@@ -17,6 +17,7 @@ Aqui documento minha evolução desde os fundamentos de Git e Docker até pipeli
 - `aula-02/` — Docker Compose e IA como Copiloto DevOps
 - `aula-03/` — IAM com Terraform: Identidade e Acesso (Groups, Users, Policies, Service Role)
 - `aula-04/` — Infraestrutura Multi-AZ na AWS com Terraform: VPC, Subnets, EC2, IAM Role e Security Groups
+- `aula-05/` — RDS PostgreSQL + Remote State com S3 e Lock de State
 
 ## Aprendizados
 
@@ -268,5 +269,108 @@ curl http://$(terraform output -raw ec2_public_ip):3000
 curl http://$(terraform output -raw ec2_public_ip):3000/health
 
 # 6. Destruir ao final do lab
+terraform destroy
+```
+
+---
+
+# Aula 05 — RDS PostgreSQL e Remote State | Felipe Damasceno (6325128)
+
+## O que aprendi
+
+- Aprendi a provisionar um banco de dados gerenciado com `aws_db_instance`, configurando engine, versão, classe de instância, storage encriptado e isolamento de rede — sem nenhuma credencial de acesso exposta no código.
+- Aprendi a criar um `aws_db_subnet_group` com subnets privadas em duas AZs distintas, requisito obrigatório da AWS para o RDS mesmo em modo `multi_az = false`.
+- Aprendi a diferenciar `publicly_accessible = false` (RDS sem IP público, acessível apenas por recursos dentro da VPC) de uma subnet pública: o isolamento real vem da combinação entre ausência de IP público e regras de Security Group.
+- Aprendi a configurar o Remote State do Terraform usando um bucket S3 com versionamento, encriptação SSE-S3 e bloqueio de acesso público — garantindo que o `terraform.tfstate` nunca fique apenas na máquina local.
+- Aprendi a usar `use_lockfile = true` no backend S3 (recurso nativo do Terraform >= 1.10), que armazena um arquivo `.tflock` diretamente no S3 durante o `apply`, evitando que dois operadores apliquem mudanças simultâneas sem a necessidade de uma tabela DynamoDB.
+- Aprendi que o bucket S3 precisa existir **antes** do `terraform init`, pois o backend é inicializado antes de qualquer recurso ser criado — o bootstrap é feito manualmente via AWS CLI.
+- Aprendi a criar uma Route Table privada sem rota para internet e associá-la às subnets do RDS, garantindo isolamento completo do banco mesmo dentro da mesma VPC.
+- Aprendi a usar `source_security_group_id` no Security Group do RDS em vez de um CIDR aberto, restringindo o acesso à porta 5432 exclusivamente às instâncias EC2 que possuem o SG da API — princípio do menor privilégio aplicado em nível de rede.
+- Aprendi a instalar o cliente `postgresql15` no EC2 via User Data para validar a conectividade ao RDS sem sair da infraestrutura provisionada.
+- Aprendi a marcar outputs como `sensitive = true` no Terraform para que strings de conexão e comandos com senha não apareçam no log do `terraform apply`.
+
+## Conceitos-chave
+
+- **Remote State:** armazenar o `terraform.tfstate` em um backend remoto compartilhado (S3) é essencial para times — qualquer membro da equipe trabalha sempre com o estado mais recente e não há risco de conflito de state local.
+- **State Lock:** o mecanismo de lock impede que dois `terraform apply` rodem ao mesmo tempo, evitando corrupção do state. O `use_lockfile = true` resolve isso via S3 nativo, sem depender de DynamoDB.
+- **RDS vs. banco em EC2:** o RDS é um serviço gerenciado — a AWS cuida de backups, patches de segurança, failover e réplicas. Rodar PostgreSQL em EC2 manualmente exige toda essa operação manual, aumentando risco operacional.
+- **DB Subnet Group:** agrupamento de subnets que define em quais AZs o RDS pode ser colocado; exige ao menos 2 AZs para garantir capacidade de failover mesmo em modo single-AZ.
+- **`publicly_accessible = false`:** o RDS não recebe IP público. O único caminho para acessá-lo é por dentro da VPC — geralmente via EC2 (bastion) ou uma conexão SSH com port forwarding.
+- **Encriptação em repouso (`storage_encrypted = true`):** dados armazenados no volume do RDS são encriptados com AES-256 gerenciado pela AWS (KMS). Boa prática mínima para qualquer ambiente.
+- **Security Group source por SG:** ao referenciar outro Security Group como source (em vez de um bloco CIDR), a regra se aplica automaticamente a qualquer nova instância EC2 que receba aquele SG — sem precisar atualizar a regra manualmente quando IPs mudam.
+
+## Arquitetura Provisionada
+
+```
+Internet → IGW → Route Table Pública → Subnet Pública (us-east-1a) → EC2 (porta 22 / 3000)
+                                                      │
+                                                      │ PostgreSQL :5432 (apenas via SG)
+                                                      ▼
+                              Subnet Privada 1  10.0.10.0/24 (us-east-1a) ─┐
+                              Subnet Privada 2  10.0.11.0/24 (us-east-1b) ─┴─► RDS PostgreSQL 15
+
+Remote State:
+  S3 Bucket   → technova-tfstate-unifaat   (versionado + encriptado + acesso público bloqueado)
+  Lock File   → .tflock no próprio S3      (use_lockfile = true — sem DynamoDB)
+
+VPC: technova-vpc (10.0.0.0/16)
+├── Subnet Pública   — 10.0.1.0/24   (us-east-1a) → EC2 API
+├── Subnet Privada 1 — 10.0.10.0/24  (us-east-1a) → RDS (DB Subnet Group)
+└── Subnet Privada 2 — 10.0.11.0/24  (us-east-1b) → RDS (DB Subnet Group)
+```
+
+## Recursos Criados
+
+| Recurso Terraform | Nome AWS | Função |
+|---|---|---|
+| `aws_vpc.main` | `technova-vpc` | Rede isolada para toda a infraestrutura |
+| `aws_subnet.public` | `technova-subnet-public-us-east-1a` | Subnet pública para o EC2 |
+| `aws_subnet.private_1` | `technova-subnet-private-us-east-1a` | Subnet privada AZ-1 para o RDS |
+| `aws_subnet.private_2` | `technova-subnet-private-us-east-1b` | Subnet privada AZ-2 para o RDS |
+| `aws_internet_gateway.main` | `technova-igw` | Porta de saída para a internet |
+| `aws_route_table.public` | `technova-rt-public` | Rota `0.0.0.0/0` → IGW |
+| `aws_route_table.private` | `technova-rt-private` | Sem rota para internet (isolamento RDS) |
+| `aws_security_group.api` | SG do EC2 | Permite SSH (22) e API (3000) |
+| `aws_security_group.rds` | SG do RDS | Permite PostgreSQL (5432) apenas do SG do EC2 |
+| `aws_db_subnet_group.main` | `technova-db-subnet-group` | Agrupa as subnets privadas para o RDS |
+| `aws_db_instance.postgres` | `technova-postgres` | RDS PostgreSQL 15 (`db.t3.micro`, 20 GB, encriptado) |
+| `aws_instance.api` | EC2 da API | Instância com `psql` para testar conectividade ao RDS |
+
+## Como Executar
+
+```bash
+cd aula-05
+
+# 1. Criar o bucket S3 para o remote state (bootstrap manual — só precisa rodar uma vez)
+aws s3api create-bucket --bucket technova-tfstate-unifaat --region us-east-1
+aws s3api put-bucket-versioning \
+  --bucket technova-tfstate-unifaat \
+  --versioning-configuration Status=Enabled
+aws s3api put-public-access-block \
+  --bucket technova-tfstate-unifaat \
+  --public-access-block-configuration \
+    "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+
+# 2. Configurar variáveis
+cp terraform.tfvars.example terraform.tfvars
+# Edite terraform.tfvars: key_pair_name, db_username, db_password
+
+# 3. Inicializar (conecta ao backend S3)
+terraform init
+
+# 4. Revisar o plano
+terraform plan
+
+# 5. Aplicar (~10–15 min por causa do RDS)
+terraform apply
+
+# 6. Verificar state no S3
+aws s3 ls s3://technova-tfstate-unifaat/aula-05/
+
+# 7. Testar conexão ao RDS via EC2
+ssh -i minha-chave.pem ec2-user@$(terraform output -raw ec2_public_ip)
+psql -h $(terraform output -raw rds_endpoint) -U technova_admin -d technova_db -W
+
+# 8. Destruir ao final do lab
 terraform destroy
 ```
