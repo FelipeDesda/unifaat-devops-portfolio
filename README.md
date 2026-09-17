@@ -18,6 +18,7 @@ Aqui documento minha evolução desde os fundamentos de Git e Docker até pipeli
 - `aula-03/` — IAM com Terraform: Identidade e Acesso (Groups, Users, Policies, Service Role)
 - `aula-04/` — Infraestrutura Multi-AZ na AWS com Terraform: VPC, Subnets, EC2, IAM Role e Security Groups
 - `aula-05/` — RDS PostgreSQL + Remote State com S3 e Lock de State
+- `aula-06/` — Infraestrutura reutilizável com módulos Terraform para ambientes `dev` e `staging` (VPC, Security Groups, EC2 e RDS)
 
 ## Aprendizados
 
@@ -418,6 +419,106 @@ Outputs principais:
 - `terraform init` exibe `Successfully configured the backend "s3"`.
 - `aws s3 ls s3://technova-tfstate-unifaat/aula-05/` lista o state remoto.
 - O RDS está em subnets privadas, com `publicly_accessible = false` e `storage_encrypted = true`.
+
+---
+
+# Aula 06 — Infraestrutura reutilizável com módulos Terraform | Felipe Damasceno (6325128)
+
+## Visão Geral
+
+A aula 06 consolidou o uso de Terraform em uma abordagem modular e reutilizável. Em vez de repetir a mesma infraestrutura em cada ambiente, a solução foi organizada em módulos dedicados para VPC, Security Groups, EC2 e RDS, permitindo que os ambientes `dev` e `staging` compartilhassem a mesma base de arquitetura com pequenas variações de configuração.
+
+## O que aprendi
+
+- Aprendi a criar módulos Terraform autônomos para cada camada da infraestrutura, reduzindo duplicação de código e padronizando a implantação em múltiplos ambientes.
+- Aprendi a separar responsabilidades: a VPC provisiona a rede base, o módulo de Security Groups define regras de acesso, a EC2 usa uma subnet pública e um grupo de segurança específico, e o RDS consome subnets privadas e regras operacionais mais restritivas.
+- Aprendi a reaproveitar entradas e saídas entre módulos, conectando outputs de um módulo aos inputs do seguinte para gerar uma stack integrada sem hardcode de valores.
+- Aprendi a manter ambientes distintos com o mesmo padrão estrutural, ajustando apenas variáveis como CIDR, nomes e banco de dados.
+- Aprendi que a modularização melhora manutenção, legibilidade e escalabilidade da infraestrutura, especialmente quando uma solução precisa evoluir para múltiplos ambientes ou projetos.
+
+## Módulos disponibilizados
+
+### VPC
+
+Cria a rede principal com:
+
+- VPC
+- Internet Gateway
+- subnets públicas e privadas
+- route table pública
+- associações automáticas entre subnets e rotas
+
+### Security Group
+
+Módulo genérico para permitir regras de ingress e liberar saída total por padrão. Permite uso em API, RDS, bastion e outros serviços.
+
+### EC2
+
+Cria uma instância em subnet pública, configurando:
+
+- AMI
+- tipo de instância
+- key pair
+- Security Groups
+- `user_data` para inicialização automatizada
+
+### RDS
+
+Cria um banco PostgreSQL com:
+
+- `db_subnet_group`
+- instância `db.t3.micro`
+- acesso restrito a partir do Security Group definido
+- isolamento em subnets privadas
+
+## Ambientes implementados
+
+| Ambiente | VPC | Banco | Identificação |
+|---|---|---|---|
+| `dev` | `10.0.0.0/16` | `technova_dev` | `technova-dev-*` |
+| `staging` | `10.1.0.0/16` | `technova_staging` | `technova-staging-*` |
+
+## Arquitetura aplicada
+
+```mermaid
+flowchart TD
+  VPC[VPC / subnets públicas e privadas] --> SG[Security Group]
+  VPC --> EC2[EC2 API]
+  SG --> EC2
+  VPC --> RDS[RDS PostgreSQL]
+  SG --> RDS
+```
+
+## Como executar
+
+```bash
+cd aula-06
+
+cd environments/dev
+terraform init
+terraform validate
+terraform plan
+terraform apply
+
+# Para staging
+cd ../staging
+terraform init
+terraform validate
+terraform plan
+terraform apply
+```
+
+## Conceitos principais
+
+- **Infraestrutura como código reutilizável:** módulos evitam duplicação e facilitam governança.
+- **Separação por camadas:** cada módulo fica responsável por uma parte da arquitetura.
+- **Padronização entre ambientes:** os ambientes seguem a mesma estrutura básica, mas com parâmetros distintos.
+- **Isolamento de rede e segurança:** subnets privadas e Security Groups mantêm o acesso mínimo necessário.
+- **Evolução escalável:** a mesma base pode ser adaptada para novos ambientes com pouco esforço.
+
+## Conclusão
+
+A aula 06 mostrou que a verdadeira maturidade em Terraform não está apenas em criar recursos isolados, mas em construir uma biblioteca de infraestrutura com módulos bem definidos, reutilizáveis e fáceis de operar em vários ambientes. Esse padrão é essencial para ambientes de produção, porque reduz risco, acelera entregas e melhora a governança da infraestrutura.
 - O Security Group do RDS permite a porta 5432 somente a partir do Security Group da EC2.
 - `terraform.tfvars` e arquivos `.pem` permanecem fora do repositório.
 
