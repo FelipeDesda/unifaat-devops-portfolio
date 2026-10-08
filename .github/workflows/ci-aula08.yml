@@ -4,13 +4,18 @@ on:
   push:
     branches: [main, develop]
     paths:
-      - 'aula-08/technova-api/**'
+      - '**.js'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'Dockerfile'
       - '.github/workflows/ci-aula08.yml'
+      - '.eslintrc.json'
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
   pull_request:
     branches: [main]
-    paths:
-      - 'aula-08/technova-api/**'
-  workflow_dispatch:
 
 defaults:
   run:
@@ -30,7 +35,14 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: aula-08/technova-api/package-lock.json
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
 
       - name: Instalar dependências
         run: npm ci
@@ -39,20 +51,22 @@ jobs:
         run: npm run lint
 
   test:
-    name: Tests (Jest)
+    name: Tests (Node ${{ matrix.node-version }})
     needs: lint
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ['18', '20']
 
     steps:
       - name: Checkout do código
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: ${{ matrix.node-version }}
           cache: 'npm'
-          cache-dependency-path: aula-08/technova-api/package-lock.json
 
       - name: Instalar dependências
         run: npm ci
@@ -61,11 +75,11 @@ jobs:
         run: npm run test:ci
 
       - name: Upload coverage report
-        if: always()
+        if: matrix.node-version == '20'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
-          path: aula-08/technova-api/coverage/
+          path: coverage/
           retention-days: 14
 
   build:
