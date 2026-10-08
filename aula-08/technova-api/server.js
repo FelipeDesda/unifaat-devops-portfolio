@@ -57,5 +57,14 @@ if (process.env.NODE_ENV !== 'test') {
   });
 }
 
+app.delete('/api/orders/:id', (req, res) => {
+  const index = orders.findIndex(o => o.id === parseInt(req.params.id));
+  if (index === -1) {
+    return res.status(404).json({ error: 'Order not found' });
+  }
+  const deleted = orders.splice(index, 1);
+  res.json({ message: 'Order deleted', order: deleted[0] });
+});
+
 module.exports = app;
 // test comment
