@@ -60,3 +60,16 @@ describe('Orders API', () => {
     expect(res.body.error).toBeDefined();
   });
 });
+
+describe('DELETE /api/orders/:id', () => {
+  it('deve deletar order existente', async () => {
+    const res = await request(app).delete('/api/orders/1');
+    expect(res.statusCode).toBe(200);
+    expect(res.body.message).toBe('Order deleted');
+  });
+
+  it('deve retornar 404 para order inexistente', async () => {
+    const res = await request(app).delete('/api/orders/999');
+    expect(res.statusCode).toBe(404);
+  });
+});
