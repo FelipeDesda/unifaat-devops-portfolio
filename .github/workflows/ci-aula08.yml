@@ -74,19 +74,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout do código
-        uses: actions/checkout@v4
+    - name: Checkout do código
+      uses: actions/checkout@v4
 
-      - name: Build da imagem Docker
-        run: docker build -t technova-api:${{ github.sha }} aula-08/technova-api/
+    - name: Build da imagem Docker
+      run: docker build -t technova-api:${{ github.sha }} .
 
-      - name: Verificar imagem criada
-        run: docker images technova-api
+    - name: Verificar imagem criada
+      run: docker images technova-api
 
-      - name: Testar container (smoke test)
-        run: |
-          docker run -d --name test-container -p 3000:3000 technova-api:${{ github.sha }}
-          sleep 3
-          curl -f http://localhost:3000/health || exit 1
-          docker stop test-container
-          docker rm test-container
+    - name: Testar container (smoke test)
+      run: |
+        docker run -d --name test-container -p 3000:3000 technova-api:${{ github.sha }}
+        sleep 3
+        curl -f http://localhost:3000/health || exit 1
+        docker stop test-container
+        docker rm test-container
