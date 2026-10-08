@@ -38,12 +38,7 @@ jobs:
       - name: Executar ESLint
         run: npm run lint
 
-      - name: Lint passou
-        if: success()
-        run: echo "✅ Código aprovado pelo ESLint!"
-    
   test:
-
     name: Tests (Jest)
     needs: lint
     runs-on: ubuntu-latest
@@ -71,8 +66,8 @@ jobs:
         with:
           name: coverage-report
           path: aula-08/technova-api/coverage/
-          retention-days: 14  
-          
+          retention-days: 14
+
   build:
     name: Build (Docker)
     needs: [lint, test]
@@ -94,4 +89,4 @@ jobs:
           sleep 3
           curl -f http://localhost:3000/health || exit 1
           docker stop test-container
-          docker rm test-container      
+          docker rm test-container
