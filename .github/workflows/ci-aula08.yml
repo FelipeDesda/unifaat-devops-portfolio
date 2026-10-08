@@ -30,6 +30,7 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
+          cache-dependency-path: aula-08/technova-api/package-lock.json
 
       - name: Instalar dependências
         run: npm ci
@@ -37,10 +38,6 @@ jobs:
       - name: Executar ESLint
         run: npm run lint
 
-      - name: Lint passou
-        if: success()
-        run: echo "✅ Código aprovado pelo ESLint!"
-    
   test:
     name: Tests (Jest)
     needs: lint
@@ -69,4 +66,27 @@ jobs:
         with:
           name: coverage-report
           path: aula-08/technova-api/coverage/
-          retention-days: 14    
+          retention-days: 14
+
+  build:
+    name: Build (Docker)
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout do código
+      uses: actions/checkout@v4
+
+    - name: Build da imagem Docker
+      run: docker build -t technova-api:${{ github.sha }} .
+
+    - name: Verificar imagem criada
+      run: docker images technova-api
+
+    - name: Testar container (smoke test)
+      run: |
+        docker run -d --name test-container -p 3000:3000 technova-api:${{ github.sha }}
+        sleep 3
+        curl -f http://localhost:3000/health || exit 1
+        docker stop test-container
+        docker rm test-container
