@@ -1,0 +1,72 @@
+name: Deploy Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip-staging:
+        description: 'Pular deploy em staging?'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  ci:
+    name: CI Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run test:ci
+
+  deploy-staging:
+    name: Deploy to Staging
+    needs: ci
+    if: ${{ !inputs.skip-staging }}
+    runs-on: ubuntu-latest
+    environment: staging
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy para Staging
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          echo "🚀 Deploying to STAGING..."
+          echo "Database: $DB_NAME @ $DB_HOST"
+          echo "Region: $AWS_REGION"
+          echo ""
+          echo "Simulando deploy..."
+          sleep 5
+          echo "✅ Deploy para staging concluído!"
+
+  deploy-production:
+    name: Deploy to Production
+    needs: [ci, deploy-staging]
+    if: always() && needs.ci.result == 'success'
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy para Production
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          echo "🚀 Deploying to PRODUCTION..."
+          echo "Database: $DB_NAME @ $DB_HOST"
+          echo "Region: $AWS_REGION"
+          echo ""
+          echo "Simulando deploy..."
+          sleep 5
+          echo "✅ Deploy para production concluído!"
