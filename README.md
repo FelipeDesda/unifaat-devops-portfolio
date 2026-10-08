@@ -19,6 +19,7 @@ Aqui documento minha evolução desde os fundamentos de Git e Docker até pipeli
 - `aula-04/` — Infraestrutura Multi-AZ na AWS com Terraform: VPC, Subnets, EC2, IAM Role e Security Groups
 - `aula-05/` — RDS PostgreSQL + Remote State com S3 e Lock de State
 - `aula-06/` — Infraestrutura reutilizável com módulos Terraform para ambientes `dev` e `staging` (VPC, Security Groups, EC2 e RDS)
+- `aula-08/` — Pipeline CI/CD com GitHub Actions: lint, testes, build de imagem Docker e push para o ECR
 
 ## Aprendizados
 
@@ -532,3 +533,96 @@ A aula 06 mostrou que a verdadeira maturidade em Terraform não está apenas em 
 | `storage_encrypted = true` | Protege os dados armazenados. |
 | `backup_retention_period = 0` | Mantém o laboratório dentro do objetivo de baixo custo. |
 | SG do RDS referenciando o SG da EC2 | Restringe a conexão PostgreSQL ao servidor de aplicação. |
+
+---
+
+# Aula 08 — Pipeline CI/CD com GitHub Actions | Felipe Damasceno (6325128)
+
+![CI Pipeline — Aula 08](https://github.com/FelipeDesda/unifaat-devops-portfolio/actions/workflows/ci-aula08.yml/badge.svg)
+
+## Visão Geral
+
+A aula 08 introduziu pipelines de CI/CD com GitHub Actions. A pipeline automatiza três etapas sequenciais — lint, testes e build Docker — que são disparadas a cada push ou pull request nas branches `main` e `develop`, garantindo que nenhum código quebrado chegue à branch principal.
+
+## O que aprendi
+
+- Aprendi a criar um workflow GitHub Actions com jobs encadeados usando `needs`, garantindo que cada etapa só execute se a anterior passar.
+- Aprendi a configurar o ESLint como gate de qualidade de código, bloqueando merges quando há violações de estilo ou erros estáticos.
+- Aprendi a rodar testes automatizados com Jest em CI, gerando relatórios de coverage e publicando como artefato para consulta posterior.
+- Aprendi a usar `cache: 'npm'` com `cache-dependency-path` para acelerar a instalação de dependências entre execuções da pipeline.
+- Aprendi a construir e testar uma imagem Docker diretamente na pipeline, sem precisar de um registry externo: o smoke test sobe o container e valida o endpoint `/health` com `curl -f`.
+- Aprendi a usar `paths:` no trigger do workflow para que a pipeline só dispare quando arquivos relevantes forem alterados, evitando execuções desnecessárias.
+- Aprendi a usar `workflow_dispatch` para acionar a pipeline manualmente pelo painel do GitHub Actions, útil para testes pontuais.
+- Aprendi a publicar artefatos com `actions/upload-artifact@v4`, tornando o relatório de coverage acessível por 14 dias após cada execução.
+
+## Estrutura da Pipeline
+
+```
+push / pull_request
+        │
+        ▼
+┌───────────────┐
+│  lint (ESLint)│  ← falha aqui bloqueia tudo
+└───────┬───────┘
+        │ needs: lint
+        ▼
+┌───────────────┐
+│ test (Jest)   │  ← gera coverage report como artefato
+└───────┬───────┘
+        │ needs: [lint, test]
+        ▼
+┌───────────────┐
+│ build (Docker)│  ← build + smoke test no /health
+└───────────────┘
+```
+
+## Jobs
+
+| Job | Ferramenta | Gatilho | Artefato |
+|---|---|---|---|
+| `lint` | ESLint | direto | — |
+| `test` | Jest + coverage | após `lint` | `coverage-report` (14 dias) |
+| `build` | Docker | após `lint` + `test` | — |
+
+## Smoke Test do Container
+
+O job `build` não apenas constrói a imagem — ele sobe o container e valida que a API responde corretamente antes de considerar o build bem-sucedido:
+
+```bash
+docker run -d --name test-container -p 3000:3000 technova-api:<sha>
+sleep 3
+curl -f http://localhost:3000/health || exit 1
+docker stop test-container && docker rm test-container
+```
+
+## Como executar localmente
+
+```bash
+cd aula-08/technova-api
+
+# Instalar dependências
+npm ci
+
+# Rodar lint
+npm run lint
+
+# Rodar testes com coverage
+npm run test:ci
+
+# Build da imagem Docker
+docker build -t technova-api:local .
+
+# Testar o container
+docker run -d --name technova-test -p 3000:3000 technova-api:local
+curl http://localhost:3000/health
+docker stop technova-test && docker rm technova-test
+```
+
+## Conceitos-chave
+
+- **Pipeline como código:** o workflow vive no repositório junto com a aplicação — qualquer alteração na pipeline passa pelo mesmo processo de revisão do código.
+- **Jobs sequenciais com `needs`:** garante que testes nunca rodam sobre código que nem passa no lint, e que o build Docker nunca é tentado com testes falhando.
+- **Cache de dependências:** `actions/setup-node` com `cache: 'npm'` reutiliza o `node_modules` entre execuções, reduzindo o tempo da pipeline.
+- **Smoke test em CI:** validar o container ainda na pipeline antecipa falhas de configuração que só apareceriam em ambiente de staging ou produção.
+- **Artefatos de coverage:** manter o relatório acessível por 14 dias permite auditar a evolução da cobertura de testes entre PRs sem depender de ferramentas externas.
+- **`paths:` no trigger:** evita execuções desnecessárias da pipeline quando arquivos não relacionados à aula 08 são alterados no repositório.
