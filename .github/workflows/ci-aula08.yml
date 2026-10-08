@@ -30,10 +30,43 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: aula-08/technova-api/package-lock.json
 
       - name: Instalar dependências
         run: npm ci
 
       - name: Executar ESLint
         run: npm run lint
+
+      - name: Lint passou
+        if: success()
+        run: echo "✅ Código aprovado pelo ESLint!"
+    
+  test:
+    name: Tests (Jest)
+    needs: lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: aula-08/technova-api/package-lock.json
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Executar testes com coverage
+        run: npm run test:ci
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: aula-08/technova-api/coverage/
+          retention-days: 14    
