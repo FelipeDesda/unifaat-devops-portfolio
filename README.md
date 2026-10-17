@@ -20,6 +20,7 @@ Aqui documento minha evolução desde os fundamentos de Git e Docker até pipeli
 - `aula-05/` — RDS PostgreSQL + Remote State com S3 e Lock de State
 - `aula-06/` — Infraestrutura reutilizável com módulos Terraform para ambientes `dev` e `staging` (VPC, Security Groups, EC2 e RDS)
 - `aula-08/` — Pipeline CI/CD com GitHub Actions: lint, testes, build de imagem Docker e push para o ECR
+- `aula-09/` — IA no CI/CD: Revisão automatizada de código com IA, estratégia de tagging (SHA + latest) e push para ECR
 
 ## Aprendizados
 
@@ -626,3 +627,259 @@ docker stop technova-test && docker rm technova-test
 - **Smoke test em CI:** validar o container ainda na pipeline antecipa falhas de configuração que só apareceriam em ambiente de staging ou produção.
 - **Artefatos de coverage:** manter o relatório acessível por 14 dias permite auditar a evolução da cobertura de testes entre PRs sem depender de ferramentas externas.
 - **`paths:` no trigger:** evita execuções desnecessárias da pipeline quando arquivos não relacionados à aula 08 são alterados no repositório.
+
+
+---
+
+# Aula 09 — IA no CI/CD: Revisão Automatizada de Código | Felipe Damasceno (6325128)
+
+## Visão Geral
+
+A aula 09 explora a integração de **Inteligência Artificial no pipeline de CI/CD**, focando em revisão automatizada de código. O projeto TechNova API serve como base para implementar boas práticas de DevOps com suporte de IA, incluindo estratégia de tagging, publicação no Amazon ECR e análise automatizada de padrões de segurança, Docker e Node.js.
+
+## O que aprendi
+
+- Aprendi a integrar IA no fluxo de revisão de código, criando um mecanismo automatizado que analisa diffs, Dockerfiles e scripts de CI contra um checklist estruturado de boas práticas.
+- Aprendi a escolher o **Amazon ECR** como registry baseado nas restrições do AWS Academy Learner Lab: credenciais temporárias por sessão, integração nativa com IAM e ausência de rate limits, diferentemente do Docker Hub ou ghcr.io.
+- Aprendi a implementar uma **estratégia de tagging dupla**: tags imutáveis baseadas no SHA do commit (`sha-<short-sha>`) para rastreabilidade total e rollback determinístico, e a tag `latest` como ponteiro de conveniência.
+- Aprendi a automatizar o build, tag e push de imagens Docker para o ECR com um script shell (`ecr-push.sh`) que resolve dinamicamente o ID da conta AWS, cria o repositório ECR sob demanda e aplica as tags corretas.
+- Aprendi a definir a fronteira entre **revisão automatizada por IA** (padrões determinísticos, anti-padrões de segurança, boas práticas de Docker/Node.js) e **revisão humana obrigatória** (decisões arquiteturais, mudanças sensíveis à segurança, lógica de negócio).
+- Aprendi a estruturar um **prompt de revisão** para LLMs que classifica achados por severidade (BLOCKER, MÉDIO, BAIXO), cita arquivo e linha específicos, e emite um veredito estruturado em JSON (APROVAR, APROVAR COM RESSALVAS, BLOQUEAR).
+- Aprendi a identificar as **limitações da revisão por IA**: falsos positivos (código correto marcado como problemático), contexto limitado (não vê runtime, não conhece intenção de negócio), fixes alucinados (sugestões plausíveis mas incorretas) e impossibilidade de verificar deploy real na AWS.
+
+## Conceitos-chave
+
+- **IA como copiloto de revisão:** a IA cuida do trabalho repetitivo e determinístico (pattern-matching, lint, presença de boas práticas), liberando humanos para julgamento, contexto e decisões de alto impacto.
+- **ECR vs. outros registries:** o ECR é a escolha natural para o Learner Lab porque reutiliza credenciais AWS temporárias, integra-se diretamente ao IAM e ao deploy em ECS/EKS, e elimina a autenticação paralela exigida pelo ghcr.io (PAT do GitHub) e os rate limits do Docker Hub.
+- **Estratégia de tagging SHA + latest:** o SHA garante rastreabilidade e imutabilidade (cada commit produz uma imagem única), permitindo rollback determinístico e auditoria; `latest` é um atalho de conveniência que nunca deve ser usado em deploys controlados.
+- **Checklist de revisão:** segurança (secrets hardcoded, execução como root, `.dockerignore`), Docker (multi-stage, versão pinned, usuário não-root), Node.js (`npm ci`, devDependencies fora da imagem, graceful shutdown, healthcheck) e higiene de CI (versões de actions pinned, sem secrets em logs).
+- **Veredito estruturado:** a IA emite JSON com severidade, arquivo, linha, problema e correção sugerida; achados BLOCKER interrompem o pipeline, MÉDIO/BAIXO geram comentários no PR.
+- **Fronteira humano/IA:** IA para determinístico e de padrão fixo (falsos positivos baratos de revisar); humano para julgamento, contexto e mudanças de alto impacto.
+
+## Arquitetura do mecanismo proposto
+
+```
+Developer push → GitHub → Workflow CI
+                            ├── Lint (ESLint)
+                            ├── Testes (Jest + cobertura)
+                            ├── Build Docker
+                            ├── AI Review Step
+                            │   ├── Diff + Dockerfile + Scripts → LLM
+                            │   ├── Checklist aplicado (segurança, Docker, Node.js, CI)
+                            │   ├── Achados classificados (BLOCKER / MÉDIO / BAIXO)
+                            │   └── Veredito JSON (APROVAR / APROVAR_COM_RESSALVAS / BLOQUEAR)
+                            └── Push para ECR (se aprovado)
+                                 ├── Tag: sha-<short-sha> (rastreável)
+                                 └── Tag: latest (conveniência)
+```
+
+## Padrões verificados pela IA
+
+### Segurança
+- Secrets hardcoded (chaves, senhas, tokens literais)
+- Arquivos `.env` dentro do contexto da imagem
+- Container executando como root
+- Ausência de `.dockerignore`
+
+### Docker
+- Multi-stage build
+- Imagem base com versão pinned (não `:latest`)
+- Camadas minimizadas
+- Usuário não-root definido e aplicado
+- Instrução `HEALTHCHECK`
+
+### Node.js
+- `npm ci` em vez de `npm install` no CI
+- `devDependencies` fora da imagem de produção
+- Tratamento graceful de SIGTERM/SIGINT
+- Endpoint `/health` implementado
+
+### Testes e CI
+- Todos os testes passam antes do merge
+- Cobertura não regrediu
+- Sem secrets impressos em logs
+- Versões de actions pinned (tag ou SHA, não `@main`)
+
+## Estratégia de tagging implementada
+
+O script `ecr-push.sh` aplica duas tags a cada build:
+
+| Tag | Exemplo | Propósito | Mutabilidade |
+|-----|---------|-----------|--------------|
+| `sha-<short-sha>` | `sha-a1b2c3d` | Rastreabilidade total ao commit, rollback determinístico, auditoria | **Imutável** |
+| `latest` | `latest` | Ponteiro de conveniência para o build mais recente | **Mutável** |
+
+### Por que não usar apenas `:latest`
+
+- É mutável: a mesma tag aponta para conteúdos diferentes ao longo do tempo
+- Difícil de reverter: não há como voltar a um estado anterior sem saber qual imagem era
+- Sem rastreabilidade: impossível associar a imagem rodando a um commit específico
+- Ambiguidade em deploys simultâneos sobre qual versão está em execução
+
+A dupla `sha-<short-sha>` + `latest` preserva o melhor dos dois mundos: imutabilidade e rastreabilidade do SHA para operações confiáveis, e conveniência do `latest` para uso rápido em desenvolvimento.
+
+## Quando confiar na IA vs. quando exigir review humano
+
+### ✅ Confiar na IA (revisão automatizada)
+
+Checagens rotineiras baseadas em padrões bem definidos, onde falsos positivos são baratos de revisar:
+
+- Regras de lint e estilo de código (ESLint)
+- Anti-padrões de segurança conhecidos (secret hardcoded, `eval`, SQL injection)
+- Boas práticas de Dockerfile (multi-stage, usuário não-root, `HEALTHCHECK`, `npm ci`)
+- Execução e resultado dos testes (verde/vermelho da suíte Jest)
+- Presença de arquivos esperados (`.dockerignore`, `.gitignore`)
+
+### 🚨 Exigir review humano
+
+Decisões que envolvem julgamento, contexto ou impacto alto:
+
+- **Decisões arquiteturais:** troca de framework, mudança de modelo de dados, nova dependência central
+- **Mudanças sensíveis à segurança:** autenticação, criptografia, políticas IAM, permissões do ECR ou roles de deploy
+- **Corretude de lógica de negócio:** regras de domínio (a IA não conhece a intenção do negócio)
+- **Mudanças em deployment/IaC:** alterações em `ecr-push.sh`, no `Dockerfile` com impacto no runtime, ou em qualquer infraestrutura como código
+- **Qualquer achado BLOCKER sobre o qual a IA está incerta:** quando a IA sinaliza baixa confiança ou o achado depende de contexto de runtime
+
+### Princípio
+
+IA faz o trabalho repetitivo e determinístico (passa/falha, presença de padrão, verde dos testes). Humanos fazem o trabalho de julgamento (a mudança faz sentido? é segura? o impacto é aceitável?). A combinação reduz carga cognitiva sem abrir mão de supervisão onde o risco é real.
+
+## Limitações identificadas
+
+### Falsos positivos
+A IA pode sinalizar código correto:
+- String que parece secret mas é placeholder ou valor público
+- `console.log` legítimo em contexto de startup marcado como "log em produção"
+- `catch` que parece vazio mas tem motivo válido
+
+**Mitigação:** barreira de severidade alta (só BLOCKER o inequivocamente problemático) e permitir que falsos positivos sejam descartados por humano.
+
+### Contexto limitado
+A IA opera apenas sobre texto do código/diff. Ela **não vê**:
+- Comportamento em runtime (vazamentos de memória, problemas de concorrência)
+- Ambiente de deploy completo (estado real da conta AWS, roles IAM, VPC, configuração ECS/EKS)
+- Intenção de negócio (requisitos do domínio da TechNova)
+
+### Fixes alucinados
+Um LLM pode sugerir correções plausíveis mas **incorretas** — código que compila mas muda a semântica, ou fix que introduz novo bug. Correções sugeridas pela IA devem ser tratadas como **sugestões** e não aplicadas automaticamente.
+
+### Impossibilidade de verificar deploy real
+A IA confirma que `ecr-push.sh` está sintaticamente correto e segue boas práticas, mas **não consegue verificar o sucesso real do push/deploy** no ECR da conta do Learner Lab. Essa verificação depende de executar o pipeline de verdade, em uma sessão ativa do lab.
+
+### Risco de checklist desatualizado
+O checklist reflete boas práticas de um momento. Conforme o ecossistema evolve (novas recomendações Docker, mudanças Node.js, novas ameaças supply-chain), o checklist pode ficar **desatualizado**. Exige manutenção periódica do prompt/checklist.
+
+## Estrutura da TechNova API
+
+```
+aula-09/technova-api/
+├── server.js                # API Express (health check + CRUD de orders)
+├── package.json             # Dependências e scripts (start, test, lint, build)
+├── Dockerfile               # Imagem multi-stage (node:20-alpine), usuário não-root
+├── .dockerignore            # Exclusões do contexto de build
+├── .eslintrc.json           # Configuração do ESLint
+├── ecr-push.sh              # Script de build/tag/push para o Amazon ECR
+├── ia-cicd-analise.md       # Análise completa da esteira CI/CD e revisão por IA
+├── __tests__/
+│   ├── server.test.js       # Suíte Jest (health + orders)
+│   └── test-problems.js     # Código problemático proposital (exercita IA review)
+└── README.md                # Documentação da API
+```
+
+## Recursos e endpoints
+
+### API TechNova
+
+| Método | Rota | Descrição | Status |
+|--------|------|-----------|--------|
+| `GET` | `/health` | Health check — retorna `status`, `timestamp` e `version` | 200 |
+| `GET` | `/api/orders` | Lista todos os pedidos | 200 |
+| `GET` | `/api/orders/:id` | Busca um pedido pelo id | 200 ou 404 |
+| `POST` | `/api/orders` | Cria um pedido (valida `product` e `quantity`) | 201 ou 400 |
+
+### Cobertura de testes
+
+A suíte Jest (`__tests__/server.test.js`) valida:
+- `GET /health` → status 200, `status: 'ok'` e `timestamp` presente
+- `GET /api/orders` → 200 e array de pedidos com campos corretos
+- `GET /api/orders/:id` → 200 para id existente e 404 para inexistente
+- `POST /api/orders` → 201 criando pedido com `status: 'pending'` e 400 quando faltam campos
+
+## Como executar localmente
+
+```bash
+cd aula-09/technova-api
+
+# 1. Instalar dependências
+npm install
+
+# 2. Executar testes
+npm test
+
+# 3. Rodar lint
+npm run lint
+
+# 4. Iniciar servidor
+npm start
+
+# 5. Testar API
+curl http://localhost:3000/health
+curl http://localhost:3000/api/orders
+```
+
+## Como construir e publicar no ECR
+
+```bash
+# 1. Configure credenciais AWS do Learner Lab
+aws configure
+# ou exporte as variáveis de ambiente (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN)
+
+# 2. Conceda permissão de execução ao script (Linux/macOS/WSL)
+chmod +x ecr-push.sh
+
+# 3. Execute o script (build + tag + push)
+./ecr-push.sh
+
+# O script:
+# - Resolve o ID da conta AWS dinamicamente
+# - Cria o repositório ECR se não existir
+# - Faz login no ECR
+# - Constrói a imagem
+# - Aplica tags sha-<short-sha> e latest
+# - Envia ambas as tags para o ECR
+```
+
+### Verificar imagens no ECR
+
+```bash
+# Listar repositórios
+aws ecr describe-repositories --region us-east-1
+
+# Listar imagens do repositório technova-api
+aws ecr list-images --repository-name technova-api --region us-east-1
+
+# Descrever imagens com detalhes (tags, digest, tamanho)
+aws ecr describe-images --repository-name technova-api --region us-east-1
+```
+
+## Validações
+
+- ✅ Dockerfile multi-stage com usuário não-root (`technova`)
+- ✅ `.dockerignore` exclui `node_modules`, `.git`, `.env`, `coverage`, `__tests__`
+- ✅ `HEALTHCHECK` aponta para `/health`
+- ✅ Suíte Jest com cobertura completa
+- ✅ ESLint configurado com `eslint:recommended`
+- ✅ Script `ecr-push.sh` aplica estratégia de tagging dupla
+- ✅ Estratégia de revisão por IA documentada com checklist, prompt e limitações
+- ✅ Fronteira entre revisão automatizada e humana definida
+- ✅ Análise completa em `ia-cicd-analise.md` com embasamento em arquivos reais
+
+## Nota sobre implementação
+
+O mecanismo de **AI review** descrito nesta aula é o **design pretendido/proposto** para o pipeline de CI/CD. Não existe a pasta `.github/workflows/` implementada no projeto `technova-api`, portanto o AI review é uma **proposta arquitetural** documentada com base em:
+
+- **Arquivos reais do projeto:** `ecr-push.sh`, `Dockerfile`, `.dockerignore`, `server.js`, `package.json`, `.eslintrc.json`, `__tests__/server.test.js` e `__tests__/test-problems.js`
+- **Características do AWS Academy Learner Lab:** credenciais temporárias, isolamento de conta, integração IAM
+- **Boas práticas de CI/CD:** checklist de segurança, Docker e Node.js
+
+A documentação completa da análise, incluindo o template de prompt para LLM e a classificação de achados por severidade, está disponível em `aula-09/technova-api/ia-cicd-analise.md`.
