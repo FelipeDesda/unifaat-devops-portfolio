@@ -1,0 +1,109 @@
+name: Security Scan
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - '**.js'
+      - '**.ts'
+      - 'Dockerfile*'
+      - 'docker-compose*'
+      - '.env*'
+      - 'package*.json'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verificar secrets no código
+        id: secrets-check
+        run: |
+          echo "## 🔒 Security Scan Results" > /tmp/security-report.md
+          echo "" >> /tmp/security-report.md
+          FOUND=0
+
+          # Verificar padrões de secrets
+          echo "### Verificação de Secrets Hardcoded" >> /tmp/security-report.md
+          echo "" >> /tmp/security-report.md
+
+          # AWS Keys
+          if git diff origin/${{ github.base_ref }}...HEAD | grep -iE "AKIA[0-9A-Z]{16}"; then
+            echo "- 🔴 **CRITICAL:** Possível AWS Access Key detectada!" >> /tmp/security-report.md
+            FOUND=1
+          fi
+
+          # Passwords em strings
+          if git diff origin/${{ github.base_ref }}...HEAD | grep -iE "password\s*[:=]\s*['\"][^'\"]{4,}"; then
+            echo "- 🔴 **CRITICAL:** Possível password hardcoded!" >> /tmp/security-report.md
+            FOUND=1
+          fi
+
+          # Private keys
+          if git diff origin/${{ github.base_ref }}...HEAD | grep -E "BEGIN (RSA |EC |DSA )?PRIVATE KEY"; then
+            echo "- 🔴 **CRITICAL:** Chave privada encontrada no código!" >> /tmp/security-report.md
+            FOUND=1
+          fi
+
+          # JWT secrets
+          if git diff origin/${{ github.base_ref }}...HEAD | grep -iE "jwt[_-]?secret\s*[:=]"; then
+            echo "- 🔴 **CRITICAL:** JWT secret hardcoded!" >> /tmp/security-report.md
+            FOUND=1
+          fi
+
+          if [ $FOUND -eq 0 ]; then
+            echo "✅ Nenhum secret hardcoded detectado." >> /tmp/security-report.md
+          fi
+
+          echo "found=$FOUND" >> $GITHUB_OUTPUT
+
+      - name: Verificar Dockerfile security
+        env:
+          DOCKERFILE: aula-09/technova-api/Dockerfile
+        run: |
+          echo "" >> /tmp/security-report.md
+          echo "### Verificação de Dockerfile" >> /tmp/security-report.md
+          echo "" >> /tmp/security-report.md
+
+          if [ -f "$DOCKERFILE" ]; then
+            # Verificar se roda como root
+            if ! grep -q "^USER" "$DOCKERFILE"; then
+              echo "- 🟡 **WARNING:** Dockerfile não define USER (roda como root)" >> /tmp/security-report.md
+            else
+              echo "- ✅ Dockerfile define usuário não-root" >> /tmp/security-report.md
+            fi
+
+            # Verificar tag latest em FROM
+            if grep -E "^FROM.*:latest" "$DOCKERFILE"; then
+              echo "- 🟡 **WARNING:** FROM usa tag :latest (não reproduzível)" >> /tmp/security-report.md
+            fi
+
+            # Verificar HEALTHCHECK
+            if grep -q "HEALTHCHECK" "$DOCKERFILE"; then
+              echo "- ✅ HEALTHCHECK configurado" >> /tmp/security-report.md
+            else
+              echo "- 🔵 **INFO:** Considere adicionar HEALTHCHECK" >> /tmp/security-report.md
+            fi
+          fi
+
+      - name: Postar resultado
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('/tmp/security-report.md', 'utf8');
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: report
+            });
