@@ -21,6 +21,7 @@ Aqui documento minha evolução desde os fundamentos de Git e Docker até pipeli
 - `aula-06/` — Infraestrutura reutilizável com módulos Terraform para ambientes `dev` e `staging` (VPC, Security Groups, EC2 e RDS)
 - `aula-08/` — Pipeline CI/CD com GitHub Actions: lint, testes, build de imagem Docker e push para o ECR
 - `aula-09/` — IA no CI/CD: Revisão automatizada de código com IA, estratégia de tagging (SHA + latest) e push para ECR
+- `aula-10/` — GitOps + CD Pipeline: Terraform automatizado (plan on PR + apply on merge), deploy contínuo com health check e rollback documentado
 
 ## Aprendizados
 
@@ -883,3 +884,426 @@ O mecanismo de **AI review** descrito nesta aula é o **design pretendido/propos
 - **Boas práticas de CI/CD:** checklist de segurança, Docker e Node.js
 
 A documentação completa da análise, incluindo o template de prompt para LLM e a classificação de achados por severidade, está disponível em `aula-09/technova-api/ia-cicd-analise.md`.
+
+
+---
+
+# Aula 10 — GitOps + CD Pipeline Completo | Felipe Damasceno (6325128)
+
+## Visão Geral
+
+A aula 10 implementou um fluxo completo de **GitOps** e **Continuous Delivery** para a TechNova API, consolidando as práticas modernas de DevOps. O projeto demonstra como infraestrutura e aplicação são gerenciadas como código, com validação automática, deploy contínuo e rollback documentado.
+
+## O que aprendi
+
+### GitOps e Infraestrutura como Código
+- Aprendi a implementar o fluxo GitOps completo: Git como única fonte da verdade para infraestrutura
+- Aprendi a criar **workflow de plan automático** em Pull Requests, postando o Terraform plan como comentário para revisão do time antes do merge
+- Aprendi a criar **workflow de apply automático** após merge para main, aplicando mudanças de infraestrutura sem intervenção manual
+- Aprendi a detectar operações destrutivas (destroy) no plan e alertar antes da execução
+- Aprendi a atualizar comentários no PR (não duplicar) quando há novos pushes
+
+### Autenticação AWS
+- Aprendi a usar **credenciais de sessão temporárias** do AWS Learner Lab (access key + secret + session token) no GitHub Actions
+- Aprendi as **limitações do Learner Lab**: não permite criar OIDC provider nem IAM roles customizadas
+- Aprendi o **padrão ideal de produção**: autenticação via OIDC (OpenID Connect) com IAM roles, eliminando credenciais estáticas
+- Aprendi por que OIDC é mais seguro: tokens temporários, rotação automática, least privilege e auditoria via CloudTrail
+
+### Pipeline CD Completa
+- Aprendi a criar pipeline de 4 jobs sequenciais: **lint** → **test** → **build-push** → **deploy**
+- Aprendi a configurar **dependências entre jobs** (`needs`), garantindo que deploy só acontece se testes passarem
+- Aprendi a fazer **login no Amazon ECR** antes de push/pull de imagens Docker
+- Aprendi a usar **multi-stage Dockerfile**: stage builder roda lint+test, stage production cria imagem otimizada
+- Aprendi a tagear imagens com **SHA do commit + latest**, permitindo rastreabilidade e rollback
+
+### Deploy Automatizado
+- Aprendi a implementar **estratégia Recreate** via SSH: stop → rm → pull → run
+- Aprendi a fazer **login no ECR na EC2** antes de docker pull (erro comum: esquecer autenticação)
+- Aprendi a implementar **health check com retry** (10 tentativas, 10s intervalo), falhando o deploy se aplicação não responder
+- Aprendi a usar `appleboy/ssh-action` para executar comandos remotos na EC2 via GitHub Actions
+- Aprendi a passar **variáveis de ambiente** do workflow para comandos SSH (credenciais AWS, SHA da imagem)
+
+### Estratégias de Deploy
+- Aprendi as diferenças entre **Recreate, Rolling Update, Blue-Green e Canary**
+- Aprendi os **trade-offs de Recreate**: simplicidade vs. downtime (~10-30s)
+- Aprendi quando usar cada estratégia: Recreate para dev/staging, Rolling para produção, Blue-Green para alta criticidade
+- Aprendi a mitigar downtime: health check com retry, login ECR antecipado, auto-restart policy
+
+### Continuous Delivery vs. Continuous Deployment
+- Aprendi a diferença fundamental: **CD** tem aprovação manual antes de produção, **Continuous Deployment** vai direto automaticamente
+- Aprendi quando usar cada abordagem: CD para conformidade regulatória e alto impacto, Continuous Deployment para ciclos rápidos
+- Aprendi sobre **feature flags** como meio-termo: deploy automático com features desabilitadas até aprovação
+
+### Rollback e Recuperação
+- Aprendi **3 métodos de rollback**: Git Revert (recomendado), Docker manual (emergência), Terraform revert
+- Aprendi a documentar procedimentos de emergência em **runbook** estruturado
+- Aprendi a listar versões anteriores de imagens no ECR usando `aws ecr describe-images`
+- Aprendi que **login no ECR é obrigatório** mesmo para rollback (erro comum que trava deploy)
+- Aprendi a criar **checklist pós-rollback**: health check, logs, testes, notificação, investigação de causa raiz
+
+### Documentação e Análise
+- Aprendi a documentar decisões técnicas e trade-offs arquiteturais
+- Aprendi a criar documentação em camadas: guia rápido (QUICKSTART), análise técnica, runbook de emergência
+- Aprendi a identificar **limitações da implementação** e propor melhorias factíveis
+- Aprendi a criar diagramas de fluxo para explicar arquitetura e processos
+
+## Arquitetura Implementada
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      DESENVOLVEDOR                           │
+│  1. Modifica .tf ou .js → 2. Abre PR → 3. Revisa plan      │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    GITHUB PULL REQUEST                       │
+│                                                               │
+│  Se *.tf mudou:                                              │
+│  → terraform-plan.yml executa                                │
+│  → Plan postado como comentário no PR                        │
+│  → Time revisa e aprova                                      │
+└────────────────────────┬────────────────────────────────────┘
+                         │ MERGE
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│                     BRANCH MAIN (PUSH)                       │
+│                                                               │
+│  Se *.tf mudou:                                              │
+│  → terraform-apply.yml                                       │
+│  → Infraestrutura atualizada automaticamente                 │
+│                                                               │
+│  Se app/* mudou:                                             │
+│  → cd.yml: lint → test → build → push ECR → deploy EC2      │
+│  → Health check valida sucesso                               │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│                      AWS (us-east-1)                         │
+│                                                               │
+│  ┌──────────────┐        ┌──────────────┐                   │
+│  │     ECR      │◄───────│  GitHub      │                   │
+│  │  technova-   │  push  │  Actions     │                   │
+│  │  api:SHA     │        └──────────────┘                   │
+│  └──────┬───────┘                                            │
+│         │ pull                                               │
+│         ▼                                                    │
+│  ┌──────────────────────────────────┐                       │
+│  │  VPC (10.0.0.0/16)               │                       │
+│  │  ┌────────────────────────────┐  │                       │
+│  │  │ Public Subnet              │  │                       │
+│  │  │  ┌──────────────────────┐  │  │                       │
+│  │  │  │ EC2 t2.micro         │  │  │                       │
+│  │  │  │ - Docker             │  │  │                       │
+│  │  │  │ - Container :3000    │  │  │                       │
+│  │  │  │ - Health check /health│ │  │                       │
+│  │  │  └──────────────────────┘  │  │                       │
+│  │  └────────────────────────────┘  │                       │
+│  └──────────────────────────────────┘                       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Workflows GitHub Actions
+
+### 1. terraform-plan.yml (Plan on PR)
+**Trigger**: Pull Request → main (mudanças em `*.tf` ou `*.tfvars`)
+
+**Executa**:
+- `terraform fmt -check` — validação de formato
+- `terraform init` — inicialização
+- `terraform validate` — validação de sintaxe
+- `terraform plan` — preview das mudanças
+- Posta plan como comentário no PR
+- Detecta operações de `destroy` e alerta
+- Atualiza comentário em novos pushes (não duplica)
+
+### 2. terraform-apply.yml (Apply on Merge)
+**Trigger**: Push → main (mudanças em `*.tf` ou `*.tfvars`)
+
+**Executa**:
+- `terraform init`
+- `terraform apply -auto-approve` — aplica mudanças automaticamente
+- Exibe outputs no job summary (IPs, URLs, IDs)
+- Notifica sucesso/falha
+
+### 3. cd.yml (Pipeline CD Completa)
+**Trigger**: Push → main (mudanças em `technova-api/**` ou `Dockerfile`)
+
+**Executa 4 jobs sequenciais**:
+
+1. **lint** — ESLint valida código JavaScript
+2. **test** — Jest roda testes unitários
+3. **build-push** — (depende de lint + test)
+   - Login no Amazon ECR
+   - Build da imagem Docker multi-stage
+   - Push com tags: SHA do commit + latest
+4. **deploy** — (depende de build-push)
+   - SSH na EC2
+   - Login no ECR
+   - Estratégia Recreate: stop → rm → pull → run
+   - Health check com retry (10 tentativas)
+
+## Recursos AWS Criados
+
+| Recurso | Nome | Descrição |
+|---------|------|-----------|
+| **VPC** | `technova-aula10-vpc` | Rede isolada 10.0.0.0/16 |
+| **Subnets** | `public-1`, `public-2` | Subnets públicas multi-AZ |
+| **Internet Gateway** | `technova-aula10-igw` | Porta de saída para internet |
+| **Route Table** | `technova-aula10-public-rt` | Rota 0.0.0.0/0 → IGW |
+| **Security Group (EC2)** | `technova-aula10-ec2-sg` | Permite SSH (22) e HTTP (3000) |
+| **EC2 Instance** | `technova-aula10-app-server` | t2.micro com Docker + AWS CLI |
+| **IAM Role** | `technova-aula10-ec2-ecr-role` | Acesso ao ECR para pull de imagens |
+| **Instance Profile** | `technova-aula10-ec2-profile` | Vincula IAM Role ao EC2 |
+| **ECR Repository** | `technova-api` | Repositório de imagens Docker |
+
+## Estratégia Recreate
+
+```
+1. STOP container atual
+   └─→ docker stop technova-api
+
+2. REMOVE container antigo
+   └─→ docker rm technova-api
+
+3. LOGIN no ECR (obrigatório!)
+   └─→ aws ecr get-login-password | docker login
+
+4. PULL nova imagem
+   └─→ docker pull $ECR_REGISTRY/technova-api:$SHA
+
+5. RUN novo container
+   └─→ docker run -d --name technova-api -p 3000:3000 ...
+
+6. HEALTH CHECK (retry 10x)
+   └─→ curl http://localhost:3000/health
+```
+
+**Downtime**: ~10-30 segundos  
+**Adequado para**: Dev, Staging, aplicações com janela de manutenção  
+**Não recomendado para**: Produção crítica (usar Rolling Update ou Blue-Green)
+
+## Procedimentos de Rollback
+
+### Método 1: Git Revert (Recomendado)
+```bash
+# Identificar commit problemático
+git log --oneline -5
+
+# Reverter
+git revert <commit-hash>
+
+# Push (triggera pipeline automaticamente)
+git push origin main
+```
+
+**Tempo**: ~5-8 minutos (pipeline completa)  
+**Vantagens**: Auditável, passa por testes, mantém histórico
+
+### Método 2: Docker Manual (Emergência)
+```bash
+# SSH na EC2
+ssh -i vockey.pem ec2-user@<EC2_IP>
+
+# Login no ECR (OBRIGATÓRIO)
+aws ecr get-login-password --region us-east-1 | \
+  docker login --username AWS --password-stdin $ECR_REGISTRY
+
+# Listar versões disponíveis
+aws ecr describe-images --repository-name technova-api
+
+# Deploy versão anterior
+docker stop technova-api
+docker rm technova-api
+docker pull $ECR_REGISTRY/technova-api:<SHA_ANTERIOR>
+docker run -d --name technova-api -p 3000:3000 ...
+
+# Validar
+curl http://localhost:3000/health
+```
+
+**Tempo**: ~2-3 minutos  
+**Vantagens**: Rápido, direto  
+**Desvantagens**: Temporário (Git ainda aponta para versão ruim)
+
+## Conceitos-chave
+
+### GitOps
+- **Git como fonte da verdade**: Toda mudança de infraestrutura passa por commit e PR
+- **Plan em PR**: Time revisa o que será criado/modificado/destruído antes de aprovar
+- **Apply automático**: Elimina erro humano de execução manual
+- **Auditoria completa**: Todo `terraform apply` está vinculado a um commit rastreável
+
+### Autenticação AWS
+- **Learner Lab**: Credenciais de sessão temporárias (access key + secret + session token)
+- **Limitação**: Expiram em 3 horas, requerem renovação manual
+- **Produção ideal**: OIDC + IAM Role (tokens temporários, rotação automática, zero secrets)
+
+### Continuous Delivery
+- **Pipeline automatizada**: lint → test → build → deploy
+- **Aprovação opcional**: Environment protection rules no GitHub
+- **Feature flags**: Deploy automático com features desabilitadas (híbrido)
+
+### Deploy Strategies
+- **Recreate**: Simples, downtime aceitável para dev/staging
+- **Rolling Update**: Sem downtime, substitui containers gradualmente
+- **Blue-Green**: Rollback instantâneo, dobra uso de recursos
+- **Canary**: Liberação gradual, detecta problemas antes de afetar todos
+
+## Estrutura de Arquivos
+
+```
+aula-10/
+├── .github/workflows/
+│   ├── terraform-plan.yml       # GitOps: Plan em PR
+│   ├── terraform-apply.yml      # GitOps: Apply no merge
+│   └── cd.yml                   # CD: lint→test→build→deploy
+│
+├── terraform/
+│   ├── main.tf                  # VPC, EC2, ECR, IAM
+│   ├── variables.tf             # Variáveis parametrizáveis
+│   ├── outputs.tf               # IPs, URLs, ARNs
+│   ├── provider.tf              # AWS provider + backend
+│   └── terraform.tfvars         # Valores das variáveis
+│
+├── technova-api/                # Aplicação Node.js
+│   ├── server.js
+│   ├── package.json
+│   ├── __tests__/
+│   └── .eslintrc.json
+│
+├── Dockerfile                   # Multi-stage: builder + production
+├── docs/
+│   └── runbook-rollback.md      # Procedimentos de emergência
+├── screenshots/                 # Evidências
+├── gitops-cd-analise.md         # Análise técnica completa
+├── QUICKSTART.md                # Guia de setup em 30 min
+├── ARCHITECTURE.md              # Documentação arquitetural
+└── README.md
+```
+
+## Diferencial: Além dos Requisitos
+
+Implementei vários recursos além do solicitado:
+
+✅ **Terraform format check** no workflow de plan  
+✅ **Comentário do plan atualizado** (não duplicado em novos pushes)  
+✅ **Deploy com GITHUB_SHA** para rastreabilidade  
+✅ **Detecção de operações destroy** com alerta  
+✅ **Health check com retry inteligente** (10 tentativas, 10s intervalo)  
+✅ **Login ECR documentado** no runbook  
+✅ **Documentação abrangente** (7 arquivos Markdown)  
+✅ **ARCHITECTURE.md** com diagramas de fluxo  
+✅ **QUICKSTART.md** para setup em 30 minutos  
+✅ **Multi-stage Dockerfile** otimizado
+
+## Como Executar
+
+### 1. Configurar GitHub Secrets
+
+No repositório GitHub: **Settings** → **Secrets and variables** → **Actions**
+
+Adicionar 6 secrets:
+- `AWS_ACCESS_KEY_ID` — do AWS Lab
+- `AWS_SECRET_ACCESS_KEY` — do AWS Lab
+- `AWS_SESSION_TOKEN` — do AWS Lab
+- `EC2_HOST` — (preencher após criar EC2)
+- `EC2_USER` — `ec2-user`
+- `EC2_SSH_KEY` — conteúdo do `vockey.pem`
+
+### 2. Provisionar Infraestrutura
+
+**Via GitHub Actions (recomendado)**:
+```bash
+# Criar branch
+git checkout -b infra/initial-setup
+
+# Modificar terraform.tfvars se necessário
+# Commitar e abrir PR
+git add aula-10/terraform/
+git commit -m "feat: configura infraestrutura inicial"
+git push origin infra/initial-setup
+
+# Abrir PR → Ver plan no comentário → Merge
+# Workflow terraform-apply.yml vai rodar automaticamente
+```
+
+### 3. Atualizar Secret EC2_HOST
+
+Após Terraform apply:
+1. Copiar IP da EC2 (do output ou console AWS)
+2. Atualizar secret `EC2_HOST` no GitHub
+
+### 4. Fazer Deploy da Aplicação
+
+```bash
+# Merge para main (ou push direto)
+git checkout main
+git merge infra/initial-setup
+git push origin main
+
+# Workflow cd.yml vai executar automaticamente
+```
+
+### 5. Testar Aplicação
+
+```bash
+# Substituir pelo IP real da EC2
+curl http://SEU_EC2_IP:3000/health
+curl http://SEU_EC2_IP:3000/api/orders
+```
+
+## Validações Realizadas
+
+- ✅ Workflow terraform-plan.yml posta plan como comentário no PR
+- ✅ Workflow terraform-apply.yml aplica infraestrutura após merge
+- ✅ Pipeline CD executa: lint → test → build → deploy
+- ✅ Imagens Docker são taggeadas com SHA + latest
+- ✅ Deploy via SSH funciona com estratégia Recreate
+- ✅ Login no ECR na EC2 antes de docker pull
+- ✅ Health check valida sucesso do deploy
+- ✅ Pipeline falha se health check não passar
+- ✅ Rollback via Git Revert funciona
+- ✅ Rollback manual via Docker funciona
+
+## Limitações Identificadas
+
+1. **Credenciais temporárias**: Secrets expiram a cada 3h (limitação do Lab)
+2. **Deploy com downtime**: Estratégia Recreate causa ~30s indisponibilidade
+3. **Sem backend remoto**: State local (backend S3 comentado no código)
+4. **Sem monitoramento**: Não há alertas se aplicação cair após deploy
+5. **Secrets no GitHub**: EC2 SSH key armazenada como secret
+
+## Melhorias Propostas
+
+### Prioridade Alta 🔴
+- Implementar backend S3 para Terraform state compartilhado
+- Configurar AWS Systems Manager Session Manager (eliminar chaves SSH)
+- Adicionar cost estimation com Infracost no plan
+
+### Prioridade Média 🟡
+- Migrar de Recreate para Rolling Update (zero downtime)
+- Implementar GitHub Environments com protection rules (aprovação manual)
+- Adicionar smoke tests pós-deploy
+- Notificações de deploy (Slack/Discord)
+
+### Prioridade Baixa 🟢
+- Docker multi-arch build (ARM + x86)
+- Workflow de destroy com aprovação manual
+- Terraform drift detection (workflow diário)
+
+## Aprendizados Principais
+
+1. **GitOps traz visibilidade e auditoria**: Toda mudança é rastreável e revisável
+2. **Credenciais de sessão funcionam, mas OIDC é ideal**: Produção deve usar OIDC + IAM Role
+3. **Recreate é simples mas tem downtime**: Aceitável para dev/staging, não para produção crítica
+4. **Continuous Delivery dá controle extra**: Aprovação manual antes de produção é válida
+5. **Rollback precisa ser testado e documentado**: Runbook de emergência é essencial
+6. **Health check com retry é crucial**: Container demora para iniciar, retry evita falso negativo
+7. **Login no ECR é obrigatório**: Erro mais comum que trava deploy/rollback
+8. **Documentação em camadas funciona**: Quick start para começar, análise para entender, runbook para emergência
+
+---
+
+**Documentação completa**: Ver `aula-10/README.md`, `gitops-cd-analise.md` e `docs/runbook-rollback.md`

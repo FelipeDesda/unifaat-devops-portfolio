@@ -1,0 +1,249 @@
+name: CD Pipeline - Lint, Test, Build, Deploy
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'aula-10/technova-api/**'
+      - 'aula-10/Dockerfile'
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: technova-api
+  NODE_VERSION: '18'
+
+jobs:
+  lint:
+    name: ESLint
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        working-directory: aula-10/technova-api
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: aula-10/technova-api/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Lint Summary
+        if: success()
+        run: |
+          echo "## ✅ ESLint - Código Aprovado" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Nenhum problema de linting detectado." >> $GITHUB_STEP_SUMMARY
+
+  test:
+    name: Jest Tests
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        working-directory: aula-10/technova-api
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: aula-10/technova-api/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Test Summary
+        if: success()
+        run: |
+          echo "## ✅ Testes - Todos Passaram" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Todos os testes unitários passaram com sucesso." >> $GITHUB_STEP_SUMMARY
+
+  build-push:
+    name: Build & Push to ECR
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    outputs:
+      image-tag: ${{ steps.build.outputs.image-tag }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and Push Docker Image
+        id: build
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          # Build da imagem multi-stage
+          docker build \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+            --build-arg GITHUB_SHA=${{ github.sha }} \
+            -f aula-10/Dockerfile \
+            aula-10/technova-api
+          
+          # Push das duas tags
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          
+          echo "image-tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          
+          echo "## 🐳 Docker Image Built & Pushed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Registry**: \`$ECR_REGISTRY\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Repository**: \`$ECR_REPOSITORY\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tags**: \`$IMAGE_TAG\`, \`latest\`" >> $GITHUB_STEP_SUMMARY
+
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    needs: [build-push]
+    environment:
+      name: production
+      url: http://${{ secrets.EC2_HOST }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy via SSH - Recreate Strategy
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ needs.build-push.outputs.image-tag }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: 22
+          envs: AWS_REGION,ECR_REPOSITORY,IMAGE_TAG,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_SESSION_TOKEN
+          script: |
+            set -e
+            
+            echo "🔐 Configurando credenciais AWS..."
+            export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+            export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+            export AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN
+            export AWS_DEFAULT_REGION=$AWS_REGION
+            
+            # Obter registry do ECR
+            ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com
+            FULL_IMAGE=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+            
+            echo "📦 Imagem a ser deployada: $FULL_IMAGE"
+            
+            # Login no ECR
+            echo "🔑 Fazendo login no Amazon ECR..."
+            aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
+            
+            # Estratégia Recreate: Stop → Remove → Pull → Run
+            echo "🛑 Parando container atual..."
+            docker stop technova-api || true
+            
+            echo "🗑️ Removendo container antigo..."
+            docker rm technova-api || true
+            
+            echo "📥 Puxando nova imagem..."
+            docker pull $FULL_IMAGE
+            
+            echo "🚀 Iniciando novo container..."
+            docker run -d \
+              --name technova-api \
+              --restart unless-stopped \
+              -p 3000:3000 \
+              -e NODE_ENV=production \
+              -e GITHUB_SHA=$IMAGE_TAG \
+              $FULL_IMAGE
+            
+            echo "✅ Deploy concluído!"
+            
+            # Aguardar container iniciar
+            sleep 5
+            
+            echo "📋 Status do container:"
+            docker ps | grep technova-api
+
+      - name: Health Check
+        run: |
+          echo "🏥 Executando health check..."
+          
+          max_attempts=10
+          attempt=1
+          
+          while [ $attempt -le $max_attempts ]; do
+            echo "Tentativa $attempt de $max_attempts..."
+            
+            if curl -f -s http://${{ secrets.EC2_HOST }}:3000/health > /dev/null 2>&1; then
+              echo "✅ Health check passou!"
+              
+              # Obter detalhes do health
+              response=$(curl -s http://${{ secrets.EC2_HOST }}:3000/health)
+              
+              echo "## ✅ Deploy Concluído com Sucesso!" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "### 🏥 Health Check Response:" >> $GITHUB_STEP_SUMMARY
+              echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
+              echo "$response" | jq . >> $GITHUB_STEP_SUMMARY
+              echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "### 📦 Deploy Info:" >> $GITHUB_STEP_SUMMARY
+              echo "- **Image Tag**: \`${{ needs.build-push.outputs.image-tag }}\`" >> $GITHUB_STEP_SUMMARY
+              echo "- **Commit**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+              echo "- **Deployed by**: @${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+              echo "- **URL**: http://${{ secrets.EC2_HOST }}:3000" >> $GITHUB_STEP_SUMMARY
+              
+              exit 0
+            fi
+            
+            echo "⏳ Aguardando aplicação iniciar..."
+            sleep 10
+            attempt=$((attempt + 1))
+          done
+          
+          echo "## ❌ Deploy Falhou - Health Check Timeout" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "A aplicação não respondeu ao health check após $max_attempts tentativas." >> $GITHUB_STEP_SUMMARY
+          
+          exit 1
+
+      - name: Deployment Summary
+        if: success()
+        run: |
+          echo "🎉 Pipeline CD completo executado com sucesso!" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,143 @@
+name: Terraform Plan on PR
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'aula-10/terraform/**/*.tf'
+      - 'aula-10/terraform/**/*.tfvars'
+
+env:
+  AWS_REGION: us-east-1
+  TF_VERSION: 1.5.0
+
+jobs:
+  plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      
+    defaults:
+      run:
+        working-directory: aula-10/terraform
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (Learner Lab Session)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Format Check
+        id: fmt
+        run: terraform fmt -check -recursive
+        continue-on-error: true
+
+      - name: Terraform Init
+        id: init
+        run: terraform init
+
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate -no-color
+
+      - name: Terraform Plan
+        id: plan
+        run: terraform plan -no-color -out=tfplan
+        continue-on-error: true
+
+      - name: Check for Destroy Operations
+        id: destroy_check
+        run: |
+          if terraform show tfplan | grep -q "destroy"; then
+            echo "⚠️ ATENÇÃO: Este plan contém operações de DESTROY!" >> $GITHUB_STEP_SUMMARY
+            echo "destroy=true" >> $GITHUB_OUTPUT
+          else
+            echo "destroy=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Post Plan as PR Comment
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        env:
+          PLAN: "${{ steps.plan.outputs.stdout }}"
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const output = `### 🏗️ Terraform Plan - Aula 10
+            
+            #### 📋 Resultados:
+            - 🎨 Terraform Format: \`${{ steps.fmt.outcome }}\`
+            - ⚙️ Terraform Init: \`${{ steps.init.outcome }}\`
+            - ✅ Terraform Validate: \`${{ steps.validate.outcome }}\`
+            - 📊 Terraform Plan: \`${{ steps.plan.outcome }}\`
+            
+            ${ steps.destroy_check.outputs.destroy === 'true' ? '#### ⚠️ ATENÇÃO: OPERAÇÕES DE DESTROY DETECTADAS!\n' : '' }
+            
+            <details><summary>📄 Plan Completo</summary>
+            
+            \`\`\`terraform
+            ${process.env.PLAN}
+            \`\`\`
+            
+            </details>
+            
+            ---
+            *Pushed by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+
+            // Buscar comentários existentes
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            
+            const botComment = comments.find(comment => {
+              return comment.user.type === 'Bot' && comment.body.includes('🏗️ Terraform Plan - Aula 10')
+            });
+
+            // Atualizar ou criar comentário
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: output
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: output
+              });
+            }
+
+      - name: Fail if Plan Failed
+        if: steps.plan.outcome == 'failure'
+        run: |
+          echo "❌ Terraform Plan falhou!"
+          exit 1
+
+      - name: Generate Summary
+        run: |
+          echo "## ✅ Terraform Plan Executado com Sucesso" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "O plan foi executado e postado como comentário no PR." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Próximos Passos:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Revise o plan no comentário do PR" >> $GITHUB_STEP_SUMMARY
+          echo "2. Faça o merge do PR para executar o apply automaticamente" >> $GITHUB_STEP_SUMMARY

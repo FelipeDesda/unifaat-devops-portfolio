@@ -1,0 +1,83 @@
+name: Terraform Apply on Merge
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'aula-10/terraform/**/*.tf'
+      - 'aula-10/terraform/**/*.tfvars'
+
+env:
+  AWS_REGION: us-east-1
+  TF_VERSION: 1.5.0
+
+jobs:
+  apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        working-directory: aula-10/terraform
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (Learner Lab Session)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        id: init
+        run: terraform init
+
+      - name: Terraform Apply
+        id: apply
+        run: |
+          echo "🚀 Iniciando Terraform Apply..."
+          terraform apply -auto-approve -no-color | tee apply-output.txt
+          echo "✅ Apply concluído!"
+
+      - name: Show Apply Output
+        if: always()
+        run: |
+          echo "## 📋 Resultado do Terraform Apply" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          cat apply-output.txt >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Extract Outputs
+        id: outputs
+        run: |
+          echo "## 🎯 Outputs da Infraestrutura" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          terraform output -json | jq -r 'to_entries[] | "- **\(.key)**: \(.value.value)"' >> $GITHUB_STEP_SUMMARY
+
+      - name: Notify Success
+        if: success()
+        run: |
+          echo "## ✅ Infraestrutura Atualizada com Sucesso!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Commit: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "Author: @${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+
+      - name: Notify Failure
+        if: failure()
+        run: |
+          echo "## ❌ Terraform Apply Falhou!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Verifique os logs acima para identificar o problema." >> $GITHUB_STEP_SUMMARY
+          exit 1
